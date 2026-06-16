@@ -36,6 +36,7 @@ export interface ChatMessage {
   role: "user" | "agent" | "system";
   content: string;
   imageDataUrl?: string;
+  imageDataUrls?: string[];
   agentId?: string;
   agentName?: string;
   agentEmoji?: string;
@@ -58,6 +59,7 @@ export interface QueuedRequest {
   kind: "message" | "command";
   content: string;
   imageDataUrl?: string;
+  imageDataUrls?: string[];
   params?: unknown;
   createdAt: string;
 }

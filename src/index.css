@@ -3,20 +3,21 @@
 
 /* Light theme (default) */
 :root, .theme-light {
-  --color-bg-primary: #f3f6fb;
+  --color-bg-primary: #fbfaf7;
   --color-bg-secondary: #ffffff;
-  --color-bg-tertiary: #eef3f9;
-  --color-border: #d8e0eb;
-  --color-text-primary: #172033;
-  --color-text-secondary: #6c778a;
-  --color-accent: #4f6bed;
-  --color-accent-hover: #4058d6;
+  --color-bg-tertiary: #f2eee8;
+  --color-sidebar: #fbf3e3;
+  --color-border: #e8e1d8;
+  --color-text-primary: #24211d;
+  --color-text-secondary: #7d766d;
+  --color-accent: #1f2328;
+  --color-accent-hover: #343942;
   --color-success: #16a085;
   --color-warning: #d97706;
   --color-danger: #e05252;
-  --shadow-soft: 0 12px 30px rgba(35, 52, 84, 0.08);
-  --radius-panel: 18px;
-  --radius-control: 12px;
+  --shadow-soft: 0 12px 28px rgba(31, 35, 40, 0.08);
+  --radius-panel: 14px;
+  --radius-control: 10px;
 }
 
 /* Dark theme */
@@ -24,6 +25,7 @@
   --color-bg-primary: #0d1117;
   --color-bg-secondary: #161b22;
   --color-bg-tertiary: #21262d;
+  --color-sidebar: #161b22;
   --color-border: #30363d;
   --color-text-primary: #c9d1d9;
   --color-text-secondary: #8b949e;
@@ -41,6 +43,7 @@
   --color-bg-primary: var(--color-bg-primary);
   --color-bg-secondary: var(--color-bg-secondary);
   --color-bg-tertiary: var(--color-bg-tertiary);
+  --color-sidebar: var(--color-sidebar);
   --color-border: var(--color-border);
   --color-text-primary: var(--color-text-primary);
   --color-text-secondary: var(--color-text-secondary);

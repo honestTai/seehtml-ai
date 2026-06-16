@@ -27,21 +27,34 @@ export function EditorPanel() {
   }, []);
 
   return (
-    <section className='min-w-[520px] flex-[1.35] overflow-hidden bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:h-[520px] max-lg:flex-none'>
+    <section className='min-w-[620px] flex-[1.65] overflow-hidden bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:h-[520px] max-lg:flex-none'>
       <div className='flex h-full min-h-0 flex-col overflow-hidden'>
-        <div className='flex h-12 flex-shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4'>
-          <div className='min-w-0 flex-1'>
-            <div className='truncate text-sm font-semibold text-[var(--color-text-primary)]'>
-              {activeDoc?.name || t('preview.emptyTitle')}
+        <div className='flex h-[68px] flex-shrink-0 flex-col border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]'>
+          <div className='flex h-8 items-center gap-2 px-3'>
+            <div className='flex max-w-[220px] items-center gap-1.5 rounded-lg bg-[var(--color-bg-tertiary)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-text-primary)]'>
+              <span className='h-2 w-2 rounded-full bg-[var(--color-text-primary)]' />
+              <span className='truncate'>{activeDoc?.name || 'SeeHTML AI'}</span>
             </div>
-            <div className='truncate text-[11px] text-[var(--color-text-secondary)]'>
-              {activeDoc?.path || t('preview.emptyHint')}
+            <button className='flex h-6 w-6 items-center justify-center rounded-md text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)]'>+</button>
+            <span className='flex-1' />
+            <div className='hidden items-center gap-1 rounded-lg bg-[var(--color-bg-tertiary)] px-2 py-1 text-[10px] text-[var(--color-text-secondary)] xl:flex'>
+              <span className='h-2 w-2 rounded-full bg-[var(--color-success)]' />
+              Preview
             </div>
+          </div>
+          <div className='flex h-9 items-center gap-2 px-3 pb-2'>
+            <span className='text-sm text-[var(--color-text-secondary)]'>←</span>
+            <span className='text-sm text-[var(--color-text-secondary)]'>→</span>
+            <span className='text-sm text-[var(--color-text-secondary)]'>↻</span>
+            <div className='min-w-0 flex-1 rounded-full bg-[var(--color-bg-primary)] px-3 py-1 text-center text-[11px] text-[var(--color-text-primary)]'>
+              <span className='truncate'>{activeDoc?.path || '127.0.0.1:5173'}</span>
+            </div>
+            <span className='text-sm text-[var(--color-text-secondary)]'>⋯</span>
           </div>
         </div>
 
         <div className='min-h-0 flex-1 bg-[var(--color-bg-primary)] p-2'>
-          <div className='h-full overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]'>
+          <div className='h-full overflow-hidden rounded-[10px] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-sm shadow-black/[0.06]'>
             {isLoading ? (
               <PreviewState icon='...' title={t('preview.loading')} />
             ) : error ? (

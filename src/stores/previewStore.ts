@@ -12,12 +12,22 @@ export interface PreviewDocument {
   content?: string;
 }
 
+export interface PreviewRenderRequest {
+  id: string;
+  type: 'mp4';
+  pageCount?: number;
+  reason: string;
+}
+
 interface PreviewState {
   document: PreviewDocument | null;
+  renderRequest: PreviewRenderRequest | null;
   isLoading: boolean;
   error: string | null;
   openFile: (path: string, name?: string) => Promise<PreviewDocument | null>;
   setGeneratedHtml: (html: string, name?: string) => void;
+  requestRender: (request: Omit<PreviewRenderRequest, 'id'>) => void;
+  clearRenderRequest: (id?: string) => void;
   clear: () => void;
 }
 
@@ -55,6 +65,7 @@ function errorMessage(error: unknown): string {
 
 export const usePreviewStore = create<PreviewState>((set) => ({
   document: null,
+  renderRequest: null,
   isLoading: false,
   error: null,
 
@@ -97,5 +108,16 @@ export const usePreviewStore = create<PreviewState>((set) => ({
     });
   },
 
-  clear: () => set({ document: null, isLoading: false, error: null }),
+  requestRender: (request) => {
+    set({ renderRequest: { ...request, id: crypto.randomUUID() } });
+  },
+
+  clearRenderRequest: (id) => {
+    set((state) => {
+      if (id && state.renderRequest?.id !== id) return {};
+      return { renderRequest: null };
+    });
+  },
+
+  clear: () => set({ document: null, renderRequest: null, isLoading: false, error: null }),
 }));

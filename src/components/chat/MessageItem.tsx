@@ -5,28 +5,34 @@ interface Props { message: ChatMessage }
 export function MessageItem({ message }: Props) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const images = message.imageDataUrls?.length ? message.imageDataUrls : message.imageDataUrl ? [message.imageDataUrl] : [];
 
   return (
-    <div className={`flex gap-2 ${isUser ? 'justify-end' : ''}`}>
+    <div className={`flex gap-3 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && (
-        <div className='w-6 h-6 rounded-full bg-[var(--color-bg-tertiary)] flex items-center justify-center text-xs flex-shrink-0'>
+        <div className='flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-tertiary)] text-[11px] text-[var(--color-text-secondary)]'>
           {message.agentEmoji || (isSystem ? '📋' : '🤖')}
         </div>
       )}
-      <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed shadow-sm ${
+      <div className={`max-w-[86%] px-3 py-2 text-sm leading-relaxed ${
         isUser
-          ? 'rounded-br-md bg-[var(--color-accent)] text-white'
-          : isSystem
-          ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] border border-[var(--color-border)]'
-          : 'rounded-bl-md border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)]'
+          ? 'rounded-2xl bg-[#f1eee9] text-[var(--color-text-primary)]'
+        : isSystem
+          ? 'text-[var(--color-text-secondary)]'
+          : 'text-[var(--color-text-primary)]'
       }`}>
         <div className='whitespace-pre-wrap'>{message.content}</div>
-        {message.imageDataUrl && (
-          <img
-            src={message.imageDataUrl}
-            alt='attached'
-            className='mt-2 max-h-40 max-w-full rounded border border-white/20 object-contain'
-          />
+        {images.length > 0 && (
+          <div className='mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3'>
+            {images.map((src, index) => (
+              <img
+                key={`${message.id}-image-${index}`}
+                src={src}
+                alt={`attached ${index + 1}`}
+                className='h-28 w-full rounded-lg border border-white/20 object-cover'
+              />
+            ))}
+          </div>
         )}
         {message.toolEvents && message.toolEvents.length > 0 && (
           <ToolTrace events={message.toolEvents} />

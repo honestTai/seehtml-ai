@@ -17,7 +17,10 @@ interface Props {
 export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange, onCapture, sourceUrl, baseHref }: Props) {
   const { t } = useI18n();
   const exportFrameRef = useRef<HTMLIFrameElement>(null);
+  const handledRenderRequests = useRef<Set<string>>(new Set());
   const openPreviewFile = usePreviewStore((s) => s.openFile);
+  const renderRequest = usePreviewStore((s) => s.renderRequest);
+  const clearRenderRequest = usePreviewStore((s) => s.clearRenderRequest);
   const [capturing, setCapturing] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState('');
@@ -110,6 +113,14 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
       setExporting(null);
     }
   };
+
+  useEffect(() => {
+    if (!renderRequest || renderRequest.type !== 'mp4' || exporting || capturing) return;
+    if (handledRenderRequests.current.has(renderRequest.id)) return;
+    handledRenderRequests.current.add(renderRequest.id);
+    clearRenderRequest(renderRequest.id);
+    void exportAnimatedMp4();
+  }, [renderRequest, exporting, capturing]);
 
   const capturePagePng = async (pageHtml: string) => {
     await loadExportPage(pageHtml);

@@ -39,9 +39,9 @@ export function Sidebar() {
   };
 
   return (
-    <aside className='w-80 flex-shrink-0 overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)] max-lg:h-[360px] max-lg:w-full max-lg:border-b max-lg:border-r-0'>
+    <aside className='w-[260px] flex-shrink-0 overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-sidebar)] max-lg:h-[360px] max-lg:w-full max-lg:border-b max-lg:border-r-0'>
       <div className='flex h-full min-h-0 flex-col'>
-      <div className='border-b border-[var(--color-border)] p-3'>
+      <div className='border-b border-[var(--color-border)] px-3 py-3'>
         <div className='mb-2 flex items-center justify-between'>
           <div>
             <div className='text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]'>{t('project.title')}</div>
@@ -55,35 +55,35 @@ export function Sidebar() {
         </div>
         <button
           onClick={openProject}
-          className='w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] px-3 py-1.5 text-left text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+          className='w-full rounded-[10px] border border-[var(--color-border)] bg-white/65 px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] shadow-sm shadow-black/[0.03] hover:bg-white hover:text-[var(--color-text-primary)]'
         >
           + {t('project.open')}
         </button>
         <div className='mt-2 flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)]'>
           <button onClick={() => { setLanguage('zh'); setLang('zh'); }}
-            className={`rounded-md px-1.5 py-0.5 ${lang==='zh'?'bg-[var(--color-accent)] text-white':'hover:bg-[var(--color-bg-tertiary)]'}`}>
+            className={`rounded-md px-1.5 py-0.5 ${lang==='zh'?'bg-[var(--color-accent)] text-white':'hover:bg-white/70'}`}>
             {t('lang.zh')}
           </button>
           <button onClick={() => { setLanguage('en'); setLang('en'); }}
-            className={`rounded-md px-1.5 py-0.5 ${lang==='en'?'bg-[var(--color-accent)] text-white':'hover:bg-[var(--color-bg-tertiary)]'}`}>
+            className={`rounded-md px-1.5 py-0.5 ${lang==='en'?'bg-[var(--color-accent)] text-white':'hover:bg-white/70'}`}>
             {t('lang.en')}
           </button>
           <span className='flex-1' />
           <button onClick={() => { setTheme('light'); setThemeState('light'); }}
-            className={`rounded-md px-1.5 py-0.5 ${theme==='light'?'bg-[var(--color-bg-tertiary)]':''}`} title={t('theme.light')}>☀️</button>
+            className={`rounded-md px-1.5 py-0.5 ${theme==='light'?'bg-white/75':''}`} title={t('theme.light')}>☀️</button>
           <button onClick={() => { setTheme('dark'); setThemeState('dark'); }}
-            className={`rounded-md px-1.5 py-0.5 ${theme==='dark'?'bg-[var(--color-bg-tertiary)]':''}`} title={t('theme.dark')}>🌙</button>
+            className={`rounded-md px-1.5 py-0.5 ${theme==='dark'?'bg-white/75':''}`} title={t('theme.dark')}>🌙</button>
           <button onClick={() => { setTheme('auto'); setThemeState('auto'); }}
-            className={`rounded-md px-1.5 py-0.5 ${theme==='auto'?'bg-[var(--color-bg-tertiary)]':''}`} title={t('theme.auto')}>🖥️</button>
+            className={`rounded-md px-1.5 py-0.5 ${theme==='auto'?'bg-white/75':''}`} title={t('theme.auto')}>🖥️</button>
         </div>
       </div>
 
-      <div className='border-b border-[var(--color-border)] p-3'>
+      <div className='border-b border-[var(--color-border)] px-3 py-3'>
         <div className='mb-2 flex items-center justify-between'>
           <div className='text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]'>{t('sessions.title')}</div>
           <button
             onClick={clearMessages}
-            className='rounded-lg bg-[var(--color-bg-tertiary)] px-2 py-1 text-[11px] text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
+          className='rounded-lg bg-white/60 px-2 py-1 text-[11px] text-[var(--color-text-secondary)] hover:bg-white hover:text-[var(--color-text-primary)]'
           >
             + {t('sessions.new')}
           </button>
@@ -105,8 +105,8 @@ function SessionRow({ title, meta, active }: { title: string; meta: string; acti
   return (
     <button className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs transition-colors ${
       active
-        ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)]'
-        : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+        ? 'bg-[#ece4dd] text-[var(--color-text-primary)]'
+        : 'text-[var(--color-text-secondary)] hover:bg-white/65 hover:text-[var(--color-text-primary)]'
     }`}>
       <span className={`h-1.5 w-1.5 rounded-full ${active ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]'}`} />
       <span className='min-w-0 flex-1 truncate'>{title}</span>

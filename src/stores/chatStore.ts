@@ -28,7 +28,7 @@ interface ChatState {
   conversationMemory: Record<string, string>;
   setInputValue: (v: string) => void;
   addMessage: (msg: ChatMessage) => void;
-  sendMessage: (content: string, imageDataUrl?: string) => Promise<void>;
+  sendMessage: (content: string, imageDataUrls?: string | string[]) => Promise<void>;
   sendCommand: (command: string, params?: unknown) => Promise<void>;
   stopProcessing: () => void;
   clearMessages: () => void;
@@ -115,27 +115,30 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveHistory();
   },
 
-  sendMessage: async (content: string, imageDataUrl?: string) => {
+  sendMessage: async (content: string, imageDataUrls?: string | string[]) => {
     const state = get();
-    if (!content.trim() && !imageDataUrl) return;
+    const images = normalizeImageDataUrls(imageDataUrls);
+    if (!content.trim() && images.length === 0) return;
     if (state.isProcessing) {
       queueRequest(set, {
         id: crypto.randomUUID(),
         kind: 'message',
         content,
-        imageDataUrl,
+        imageDataUrl: images[0],
+        imageDataUrls: images,
         createdAt: new Date().toISOString(),
       });
       return;
     }
 
-    const displayContent = content.trim() || t('chat.imageDefault');
-    const intent = classifyIntent(content, Boolean(imageDataUrl), Boolean(state.htmlDocument));
+    const displayContent = content.trim() || (images.length > 1 ? t('chat.imagesDefault') : t('chat.imageDefault'));
+    const intent = classifyIntent(content, images.length > 0, Boolean(state.htmlDocument));
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
       content: displayContent,
-      imageDataUrl,
+      imageDataUrl: images[0],
+      imageDataUrls: images,
       timestamp: new Date().toISOString(),
     };
     const requestId = crypto.randomUUID();
@@ -149,8 +152,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
     beginProcessingTimeline(set, get, requestId, intent);
 
     try {
-      const prompt = imageDataUrl
-        ? await withTimeout(buildImagePrompt(content, imageDataUrl, intent.htmlSkill), REQUEST_TIMEOUT_MS, t('chat.timeout'))
+      if (intent.wantsVideoExport && !intent.wantsHtmlOutput) {
+        const previewDoc = usePreviewStore.getState().document;
+        const currentHtml = state.htmlDocument || (previewDoc?.kind === 'html' ? previewDoc.content : null);
+        if (!currentHtml) throw new Error(t('chat.noHtmlDocument'));
+        usePreviewStore.getState().requestRender({
+          type: 'mp4',
+          pageCount: intent.requestedPages,
+          reason: content,
+        });
+        const agentMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: 'agent',
+        content: `${t('export.renderingPage')}，${t('export.encodingMp4')}。`,
+        timestamp: new Date().toISOString(),
+        workflow: buildWorkflowForIntent(intent),
+      };
+        let completed = false;
+        set((s) => {
+          if (s.activeRequestId !== requestId) return {};
+          completed = true;
+          return {
+            messages: [...s.messages, agentMsg],
+            isProcessing: false,
+            processingSteps: [],
+            activeRequestId: null,
+          };
+        });
+        get().saveHistory();
+        if (completed) drainQueuedRequest(set, get);
+        return;
+      }
+
+      const prompt = images.length > 0
+        ? await withTimeout(buildImagePrompt(content, images, intent), REQUEST_TIMEOUT_MS, t('chat.timeout'))
         : buildPromptForIntent(content, state.htmlDocument, intent);
 
       const { assistantContent, messages } = await withTimeout(
@@ -173,6 +208,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const htmlQuality = html ? validateHtmlQuality(html, getLanguage()) : [];
       if (html) {
         usePreviewStore.getState().setGeneratedHtml(html, extractTitle(html) || 'AI HTML Preview');
+        if (intent.wantsVideoExport) {
+          usePreviewStore.getState().requestRender({
+            type: 'mp4',
+            pageCount: intent.requestedPages,
+            reason: content,
+          });
+        }
       }
       const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -180,6 +222,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         content: formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
         timestamp: new Date().toISOString(),
         toolEvents,
+        workflow: buildWorkflowForIntent(intent),
       };
 
       let completed = false;
@@ -399,6 +442,9 @@ interface AgentIntent {
   toolNames: string[];
   maxIterations: number;
   wantsHtmlOutput: boolean;
+  requestedPages?: number;
+  wantsAnimation?: boolean;
+  wantsVideoExport?: boolean;
   htmlSkill?: HtmlSkill;
 }
 
@@ -406,6 +452,9 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
   const text = content.trim();
   const lower = text.toLowerCase();
   const zh = getLanguage() === 'zh';
+  const requestedPages = inferPageCountFromText(text);
+  const wantsAnimation = /(动画|动效|运动|自动渲染|逐页渲染|粒子|转场|animate|animated|animation|motion|transition)/i.test(text);
+  const wantsVideoExport = /(mp4|视频|video|导出.*(?:mp4|视频)|转成.*(?:mp4|视频)|转为.*(?:mp4|视频)|自动.*(?:mp4|视频))/i.test(text);
   const createWords = /(生成|创建|做一个|做个|写一个|写个|设计|制作|页面|网页|html|动效|粒子|炫酷|landing|create|generate|make|build|design)/i;
   const editWords = /(修改|优化|改成|换成|调整|美化|润色|主题|风格|edit|update|change|theme|style|polish)/i;
   const exportWords = /(导出|输出|转成|转为|转换|发布|打包|export|convert|publish|package|pptx|markdown|\bmd\b|mp4|video|png|pdf)/i;
@@ -417,11 +466,14 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       id: 'image-to-html',
       title: zh ? '图片理解' : 'Image understanding',
       summary: zh
-        ? `先识别图片内容，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
-        : `Read the image first, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
+        ? `先识别图片内容${requestedPages ? `，按 ${requestedPages} 页` : ''}，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
+        : `Read the image first${requestedPages ? `, create ${requestedPages} pages` : ''}, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
       toolNames: [],
       maxIterations: 1,
       wantsHtmlOutput: true,
+      requestedPages,
+      wantsAnimation,
+      wantsVideoExport,
       htmlSkill,
     };
   }
@@ -437,11 +489,14 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       id: asksEdit ? 'edit-html' : 'generate-html',
       title: zh ? (asksEdit ? '修改 HTML' : '生成 HTML') : (asksEdit ? 'Edit HTML' : 'Generate HTML'),
       summary: zh
-        ? `LLM 直接生成或修改 HTML，内置 ${skillLabel(htmlSkill, 'zh')} 质量约束，完成后自动刷新中间预览。`
-        : `The LLM writes or edits HTML with the built-in ${skillLabel(htmlSkill, 'en')}, then the preview refreshes.`,
+        ? `LLM 按需求${requestedPages ? `生成 exactly ${requestedPages} 页` : '生成或修改 HTML'}，内置 ${skillLabel(htmlSkill, 'zh')} 质量约束，完成后自动刷新预览${wantsVideoExport ? '并触发 MP4 渲染' : ''}。`
+        : `The LLM writes or edits HTML${requestedPages ? ` as exactly ${requestedPages} pages` : ''} with ${skillLabel(htmlSkill, 'en')}, then the preview refreshes${wantsVideoExport ? ' and MP4 rendering starts' : ''}.`,
       toolNames: [],
       maxIterations: 1,
       wantsHtmlOutput: true,
+      requestedPages,
+      wantsAnimation,
+      wantsVideoExport,
       htmlSkill,
     };
   }
@@ -456,6 +511,9 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       toolNames: [],
       maxIterations: 1,
       wantsHtmlOutput: false,
+      requestedPages,
+      wantsAnimation,
+      wantsVideoExport,
     };
   }
 
@@ -469,6 +527,9 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       toolNames: [],
       maxIterations: 1,
       wantsHtmlOutput: false,
+      requestedPages,
+      wantsAnimation,
+      wantsVideoExport,
     };
   }
 
@@ -479,16 +540,67 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
     toolNames: [],
     maxIterations: 1,
     wantsHtmlOutput: false,
+    requestedPages,
+    wantsAnimation,
+    wantsVideoExport,
   };
+}
+
+function inferPageCountFromText(text: string): number | undefined {
+  const numericMatch = text.match(/(?:^|[^\d])(\d{1,2})\s*(?:页|页面|p|page|pages|slide|slides|张|屏)/i);
+  if (numericMatch) {
+    const value = Number(numericMatch[1]);
+    if (Number.isFinite(value)) return Math.max(1, Math.min(value, 24));
+  }
+
+  const zhMatch = text.match(/([一二两三四五六七八九十]{1,3})\s*(?:页|页面|张|屏)/);
+  if (zhMatch) {
+    const value = parseChineseCount(zhMatch[1]);
+    if (value) return Math.max(1, Math.min(value, 24));
+  }
+
+  return undefined;
+}
+
+function parseChineseCount(value: string): number | undefined {
+  const digits: Record<string, number> = {
+    一: 1,
+    二: 2,
+    两: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+  };
+  if (value === '十') return 10;
+  if (value.includes('十')) {
+    const [left, right] = value.split('十');
+    const tens = left ? digits[left] || 0 : 1;
+    const ones = right ? digits[right] || 0 : 0;
+    const total = tens * 10 + ones;
+    return total > 0 ? total : undefined;
+  }
+  return digits[value];
 }
 
 function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
   const zh = getLanguage() === 'zh';
+  const pageDetail = intent.requestedPages
+    ? (zh ? `已解析页数：${intent.requestedPages} 页，生成时必须 exactly ${intent.requestedPages} 个顶层页面。` : `Parsed page count: exactly ${intent.requestedPages} top-level pages.`)
+    : (zh ? '未指定页数，由 Agent 根据需求决定页面结构。' : 'No page count specified; the Agent will choose the page structure.');
+  const motionDetail = intent.wantsAnimation
+    ? (zh ? '已识别动画需求：生成 HTML 时必须包含可预览、可逐帧导出的动效。' : 'Animation requested: generated HTML must preview and export deterministically.')
+    : (zh ? '未指定动画时保持页面稳定，不额外制造复杂动效。' : 'No animation requested; keep motion restrained.');
   const toolDetail = intent.toolNames.length > 0
     ? `${zh ? '仅开放工具：' : 'Allowed tools only: '}${intent.toolNames.join(', ')}`
+    : intent.wantsVideoExport
+    ? (zh ? '将调用预览渲染器逐帧截图，再调用 FFmpeg 合成 MP4。' : 'The preview renderer captures frames, then FFmpeg encodes MP4.')
     : (zh ? '本轮无需工具，避免无关工具链。' : 'No tools for this turn, avoiding unrelated tool calls.');
   const skillDetail = intent.htmlSkill
-    ? `${zh ? '内置质量 Skill：' : 'Built-in quality skill: '}${skillLabel(intent.htmlSkill, getLanguage())}`
+    ? `${pageDetail} ${motionDetail} ${zh ? '内置质量 Skill：' : 'Built-in quality skill: '}${skillLabel(intent.htmlSkill, getLanguage())}`
     : toolDetail;
   return [
     {
@@ -505,8 +617,10 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
     },
     {
       id: 'execute',
-      title: intent.toolNames.length > 0 ? (zh ? '执行工具轮' : 'Run tool turns') : (zh ? '直接生成结果' : 'Generate directly'),
-      detail: intent.toolNames.length > 0
+      title: intent.wantsVideoExport ? (zh ? '准备自动渲染' : 'Prepare auto render') : intent.toolNames.length > 0 ? (zh ? '执行工具轮' : 'Run tool turns') : (zh ? '直接生成结果' : 'Generate directly'),
+      detail: intent.wantsVideoExport
+        ? (zh ? 'HTML 完成后会通知预览器逐页渲染动画帧，并调用 FFmpeg 合成 MP4。' : 'After HTML is ready, the preview renderer captures animated frames and FFmpeg encodes MP4.')
+        : intent.toolNames.length > 0
         ? (zh ? '按白名单顺序收集工具结果。' : 'Collect tool results from the whitelist.')
         : (zh ? '由 LLM 输出结果，缺信息时先追问。' : 'The LLM responds directly or asks a follow-up.'),
       status: 'pending',
@@ -543,6 +657,44 @@ function beginProcessingTimeline(
   }
 }
 
+function buildWorkflowForIntent(intent: AgentIntent): WorkflowStep[] | undefined {
+  const steps: WorkflowStep[] = [];
+  if (intent.requestedPages) {
+    steps.push({
+      id: 'infer-pages',
+      agent: 'Planner',
+      action: 'infer_pages',
+      parameters: { text: 'user request' },
+      depends_on: [],
+      status: 'Done',
+      result: { pages: intent.requestedPages },
+    });
+  }
+  if (intent.wantsAnimation) {
+    steps.push({
+      id: 'motion-plan',
+      agent: 'MotionHTMLSkill',
+      action: 'plan_animation',
+      parameters: { deterministicExport: true },
+      depends_on: intent.requestedPages ? ['infer-pages'] : [],
+      status: 'Done',
+      result: { exportFrameEvent: 'seehtml:export-frame' },
+    });
+  }
+  if (intent.wantsVideoExport) {
+    steps.push({
+      id: 'render-mp4',
+      agent: 'PreviewRenderer',
+      action: 'render_mp4',
+      parameters: { resolution: '1920x1080', fps: 60 },
+      depends_on: ['motion-plan'].filter((id) => steps.some((step) => step.id === id)),
+      status: 'Running',
+      result: { encoder: 'FFmpeg', mode: 'page-by-page animated frames' },
+    });
+  }
+  return steps.length > 0 ? steps : undefined;
+}
+
 function queueRequest(set: SetChatState, request: QueuedRequest) {
   set((s) => ({
     inputValue: '',
@@ -560,66 +712,96 @@ function drainQueuedRequest(set: SetChatState, get: () => ChatState) {
       void get().sendCommand(next.content, next.params);
       return;
     }
-    void get().sendMessage(next.content, next.imageDataUrl);
+    void get().sendMessage(next.content, next.imageDataUrls || next.imageDataUrl);
   }, 80);
+}
+
+function normalizeImageDataUrls(value?: string | string[]): string[] {
+  if (!value) return [];
+  const list = Array.isArray(value) ? value : [value];
+  return list.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
 function buildPromptForIntent(content: string, html: string | null, intent: AgentIntent): string {
   const base = html ? withCurrentDocument(content, html) : content;
   if (!intent.wantsHtmlOutput) return base;
   const qualityPrompt = intent.htmlSkill ? buildHtmlSkillPrompt(intent.htmlSkill, getLanguage()) : '';
+  const pagePrompt = intent.requestedPages
+    ? `The user requested exactly ${intent.requestedPages} pages. Return exactly ${intent.requestedPages} top-level page sections and no extra hidden, blank, duplicated, cover, appendix, or decorative sections that could be counted as pages.
+Use this shape for each page:
+<section class="slide" data-slide="1">...</section>
+...
+<section class="slide" data-slide="${intent.requestedPages}">...</section>`
+    : 'If the user did not specify a page count, choose the smallest number of complete pages that satisfies the request.';
+  const motionPrompt = intent.wantsAnimation
+    ? `The user requested animation. Each page must have visible motion in normal preview and deterministic export support:
+- Define a renderAtTime(seconds) function or equivalent deterministic update path.
+- Listen for window event "seehtml:export-frame" and render from event.detail.time.
+- Also support normal requestAnimationFrame preview.
+- Avoid relying only on real elapsed wall-clock time, because MP4 export captures frames programmatically.`
+    : 'Do not add heavy animation unless the user requested it.';
+  const videoPrompt = intent.wantsVideoExport
+    ? 'After this HTML is generated, the app will automatically render each page to 1080p/60fps MP4. Make the animation loop cleanly within each page duration.'
+    : '';
 
   return `${base}
 
 When the request is to create or edit a page, return ONLY one complete <!DOCTYPE html> document with inline CSS and JavaScript if needed.
 The HTML must be directly previewable in an iframe. Do not call tools unless the router has explicitly exposed one.
+${pagePrompt}
+${motionPrompt}
+${videoPrompt}
 
 ${qualityPrompt}`;
 }
 
-async function buildImagePrompt(content: string, imageDataUrl: string, htmlSkill?: HtmlSkill): Promise<string> {
-  let ocrText = '';
+async function buildImagePrompt(content: string, imageDataUrls: string[], intent: AgentIntent): Promise<string> {
+  const ocrItems: string[] = [];
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    const savedPath = await invoke<string>('save_image', { dataUrl: imageDataUrl, index: 999 });
-    const ocrResult = await invoke<{ text?: string }>('run_ocr', { imagePath: savedPath, engine: 'easyocr' });
-    ocrText = (ocrResult?.text || '').trim();
+    for (let index = 0; index < imageDataUrls.length; index += 1) {
+      try {
+        const savedPath = await invoke<string>('save_image', { dataUrl: imageDataUrls[index], index: 900 + index });
+        const ocrResult = await invoke<{ text?: string }>('run_ocr', { imagePath: savedPath, engine: 'easyocr' });
+        const text = (ocrResult?.text || '').trim();
+        ocrItems.push(`Image ${index + 1} OCR:\n"""\n${text || '(no readable text detected)'}\n"""`);
+      } catch {
+        ocrItems.push(`Image ${index + 1} OCR:\n"""\n(OCR unavailable for this image)\n"""`);
+      }
+    }
   } catch {}
 
   const userIntent = content.trim();
-  const hasSubstantialText = ocrText.length > 30;
-  const hasSomeText = ocrText.length > 3;
-  const qualityPrompt = htmlSkill ? `\n\n${buildHtmlSkillPrompt(htmlSkill, getLanguage())}` : '';
+  const ocrText = ocrItems.join('\n\n');
+  const hasSubstantialText = ocrText.length > 80 && !ocrText.includes('(no readable text detected)');
+  const qualityPrompt = intent.htmlSkill ? `\n\n${buildHtmlSkillPrompt(intent.htmlSkill, getLanguage())}` : '';
+  const imageCount = imageDataUrls.length;
+  const pagePrompt = intent.requestedPages
+    ? `Create exactly ${intent.requestedPages} pages using exactly ${intent.requestedPages} top-level <section class="slide" data-slide="..."> elements. Do not create extra hidden, blank, duplicate, cover, appendix, or decorative sections that could be counted as pages.`
+    : 'Choose the smallest complete page count that satisfies the request.';
+  const motionPrompt = intent.wantsAnimation
+    ? `Each page must include visible animation and deterministic export support. Listen for "seehtml:export-frame" and render from event.detail.time; also support normal requestAnimationFrame preview.`
+    : 'Do not add heavy animation unless the user requested it.';
+  const videoPrompt = intent.wantsVideoExport
+    ? 'After this HTML is generated, the app will automatically render it into a 1080p/60fps MP4, so animation must be frame-seekable and loop cleanly.'
+    : '';
+  const fallbackTask = imageCount > 1
+    ? 'Analyze these reference images together and create a complete responsive HTML page that follows their layout, content hierarchy, visual style, and common intent.'
+    : 'Analyze the image intent and create a visually polished landing page.';
 
-  if (hasSubstantialText) {
-    return `I am sending a screenshot or document image.
+  return `I am sending ${imageCount} reference image${imageCount > 1 ? 's' : ''}.
 
-OCR extracted:
-"""
-${ocrText}
-"""
+${ocrText || 'No OCR text was available.'}
 
-${userIntent || 'Generate a complete HTML page that faithfully reproduces the layout, colors, text hierarchy, and visual structure.'}
+${userIntent || (hasSubstantialText
+    ? 'Generate a complete HTML page that faithfully reproduces the layout, colors, text hierarchy, and visual structure.'
+    : fallbackTask)}
 
-Return a complete <!DOCTYPE html> document with inline CSS.${qualityPrompt}`;
-  }
-
-  if (hasSomeText) {
-    return `I am sending a marketing image.
-
-OCR found:
-"""
-${ocrText}
-"""
-
-${userIntent || 'Create a complete marketing landing page inspired by this image.'}
-
-Return a complete <!DOCTYPE html> document with inline CSS.${qualityPrompt}`;
-  }
-
-  return `${userIntent || 'Analyze the image intent and create a visually polished landing page.'}
-
-No substantial OCR text was found. Create a complete responsive <!DOCTYPE html> document with inline CSS.${qualityPrompt}`;
+When multiple images are provided, treat them as one design/context set unless the user explicitly says otherwise.
+${pagePrompt}
+${motionPrompt}
+${videoPrompt}
+Return a complete <!DOCTYPE html> document with inline CSS and JavaScript when useful.${qualityPrompt}`;
 }
 
 function withCurrentDocument(content: string, html: string | null): string {
