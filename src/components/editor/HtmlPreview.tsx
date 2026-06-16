@@ -73,7 +73,7 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
   const exportAnimatedMp4 = async () => {
     if (exporting) return;
     const pages = slides.length > 0 ? slides : [{ id: 'page-1', title: 'Page 1', html: htmlContent }];
-    const fps = 30;
+    const fps = 60;
     const secondsPerPage = 4;
     const framesPerPage = fps * secondsPerPage;
     let frameIndex = 0;
