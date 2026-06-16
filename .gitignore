@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Frontend and Rust build output
+dist/
+target/
+output/
+src-tauri/gen/
+
+# Bundled binary runtimes
+ffmpeg/
+python/*
+!python/ocr_service.py
+!python/.gitkeep
+
+# Local installers and generated packages
+*.msi
+*.exe
+*.app
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+*.zip
+
+# Local signing material and secrets
+*.pfx
+*.pem
+*.key
+cert.cnf
+
+# Logs and temp files
+*.log
+.DS_Store
+Thumbs.db
+build_rust*.mjs
+
+# Local editor config
+.idea/
+.vscode/

@@ -1,0 +1,34 @@
+{
+  "name": "seehtml",
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "npx @tauri-apps/cli",
+    "download-deps": "node scripts/download-deps.cjs",
+    "build:full": "node scripts/download-deps.cjs && npx @tauri-apps/cli build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-fs": "^2",
+    "@tauri-apps/plugin-shell": "^2",
+    "html-to-image": "^1.11.13",
+    "react": "^19",
+    "react-dom": "^19",
+    "react-markdown": "^10",
+    "react-syntax-highlighter": "^16",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vite": "^6"
+  }
+}

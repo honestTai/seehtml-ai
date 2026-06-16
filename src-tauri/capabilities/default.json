@@ -1,0 +1,22 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for SeeHTML AI",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-read",
+    "fs:allow-write",
+    "fs:allow-exists",
+    "fs:allow-mkdir",
+    "fs:scope-app-recursive",
+    "shell:default",
+    "shell:allow-execute",
+    "shell:allow-spawn",
+    "shell:allow-open",
+    "opener:default"
+  ]
+}

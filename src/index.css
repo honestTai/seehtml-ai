@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/* Light theme (default) */
+:root, .theme-light {
+  --color-bg-primary: #f3f6fb;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #eef3f9;
+  --color-border: #d8e0eb;
+  --color-text-primary: #172033;
+  --color-text-secondary: #6c778a;
+  --color-accent: #4f6bed;
+  --color-accent-hover: #4058d6;
+  --color-success: #16a085;
+  --color-warning: #d97706;
+  --color-danger: #e05252;
+  --shadow-soft: 0 12px 30px rgba(35, 52, 84, 0.08);
+  --radius-panel: 18px;
+  --radius-control: 12px;
+}
+
+/* Dark theme */
+.theme-dark {
+  --color-bg-primary: #0d1117;
+  --color-bg-secondary: #161b22;
+  --color-bg-tertiary: #21262d;
+  --color-border: #30363d;
+  --color-text-primary: #c9d1d9;
+  --color-text-secondary: #8b949e;
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-success: #22c7a9;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --shadow-soft: 0 16px 36px rgba(0, 0, 0, 0.28);
+  --radius-panel: 18px;
+  --radius-control: 12px;
+}
+
+@theme {
+  --color-bg-primary: var(--color-bg-primary);
+  --color-bg-secondary: var(--color-bg-secondary);
+  --color-bg-tertiary: var(--color-bg-tertiary);
+  --color-border: var(--color-border);
+  --color-text-primary: var(--color-text-primary);
+  --color-text-secondary: var(--color-text-secondary);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-success: var(--color-success);
+  --color-warning: var(--color-warning);
+  --color-danger: var(--color-danger);
+}
+
+body {
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  transition: background-color 0.3s, color 0.3s;
+  overflow: hidden;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #bac6d6 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #bac6d6;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+button, textarea, input {
+  font: inherit;
+}
