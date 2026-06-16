@@ -256,14 +256,17 @@ impl AgentLoop {
             })
             .collect();
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.config.model,
             "messages": openai_msgs,
-            "tools": openai_tools,
-            "tool_choice": "auto",
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
         });
+
+        if !openai_tools.is_empty() {
+            body["tools"] = serde_json::json!(openai_tools);
+            body["tool_choice"] = serde_json::json!("auto");
+        }
 
         info!("Calling LLM: {} messages, {} tools", messages.len(), tools.len());
 

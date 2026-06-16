@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useChatStore } from '../../stores/chatStore';
-import { getPreviewKind, isPreviewableName, usePreviewStore } from '../../stores/previewStore';
+import { PREVIEWABLE_EXTENSIONS, getPreviewKind, isPreviewableName, usePreviewStore } from '../../stores/previewStore';
 import { useI18n } from '../../lib/i18n';
 import type { FileTreeNode } from '../../types';
 
@@ -21,10 +21,13 @@ function sortKey(node: FileTreeNode): string {
   return `${node.is_dir ? '0' : '1'}:${node.name.toLowerCase()}`;
 }
 
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
 export function FileExplorer() {
   const { t } = useI18n();
   const setHtmlDocument = useChatStore((s) => s.setHtmlDocument);
-  const isProcessing = useChatStore((s) => s.isProcessing);
   const openPreviewFile = usePreviewStore((s) => s.openFile);
   const activePath = usePreviewStore((s) => s.document?.path);
   const [root, setRoot] = useState<FileTreeNode | null>(null);
@@ -79,6 +82,29 @@ export function FileExplorer() {
     }
   }, [loadRoot, t]);
 
+  const openPreviewPath = useCallback(async (path: string) => {
+    const doc = await openPreviewFile(path, fileName(path));
+    if (doc?.kind === 'html' && doc.content) {
+      setHtmlDocument(doc.content);
+    }
+  }, [openPreviewFile, setHtmlDocument]);
+
+  const chooseFile = useCallback(async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        filters: [{ name: 'HTML / Video / PDF / Markdown / Image', extensions: PREVIEWABLE_EXTENSIONS }],
+      });
+      if (typeof selected === 'string') {
+        await openPreviewPath(selected);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('sidebar.unavailable'));
+    }
+  }, [openPreviewPath, t]);
+
   const toggleDirectory = useCallback(async (node: FileTreeNode) => {
     if (!node.is_dir) return;
 
@@ -104,12 +130,9 @@ export function FileExplorer() {
   }, [expanded, loadDirectory]);
 
   const openFile = useCallback(async (node: FileTreeNode) => {
-    if (!isPreviewableName(node.name) || isProcessing) return;
-    const doc = await openPreviewFile(node.path, node.name);
-    if (doc?.kind === 'html' && doc.content) {
-      setHtmlDocument(doc.content);
-    }
-  }, [isProcessing, openPreviewFile, setHtmlDocument]);
+    if (!isPreviewableName(node.name)) return;
+    await openPreviewPath(node.path);
+  }, [openPreviewPath]);
 
   return (
     <div className='h-full flex flex-col'>
@@ -122,6 +145,13 @@ export function FileExplorer() {
             {root?.name || t('sidebar.workspace')}
           </div>
         </div>
+        <button
+          onClick={chooseFile}
+          title={t('sidebar.openFile')}
+          className='h-7 w-7 rounded-full border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-xs hover:bg-[var(--color-border)]'
+        >
+          ◇
+        </button>
         <button
           onClick={chooseFolder}
           title={t('sidebar.chooseFolder')}
@@ -158,7 +188,7 @@ export function FileExplorer() {
             expanded={expanded}
             onToggle={toggleDirectory}
             onOpenFile={openFile}
-            disabled={isProcessing}
+            disabled={false}
             activePath={activePath}
           />
         </div>

@@ -55,18 +55,54 @@ Context: {}", prompt.user_prompt, prompt.context.as_deref().unwrap_or(""))}
 
     async fn generate_slide_content(&self, topic: &str, num_slides: u32) -> Result<Vec<String>> {
         let prompt = AiPrompt {
-            system_prompt: "You are an HTML presentation generator. Create complete, well-formatted HTML slides. Each slide must be a self-contained HTML section with heading and content.".into(),
-            user_prompt: format!("Generate {} presentation slides about: {}. Output format: Wrap each slide in <section class=\"slide\"> with <h2> for title and <ul>/<p> for content. Use inline CSS for basic styling (font-family: system-ui, colors, etc). Return ONLY the HTML, no markdown wrappers.", num_slides, topic),
+            system_prompt: r#"You are SeeHTML Frontend Slides Skill.
+Create polished, production-quality, directly previewable HTML decks.
+Return HTML only. Do not use Markdown fences.
+Quality gate:
+- Build a complete visual story with strong hierarchy, not plain bullet dumps.
+- Include responsive CSS, viewport-safe slide sizing, polished spacing, and readable contrast.
+- Each slide must fit the viewport without text overlap or horizontal scrolling.
+- Prefer inline CSS and inline JavaScript only; avoid external network dependencies.
+- Use semantic structure, accessible labels when useful, and reduced-motion handling when animation is present.
+- The output must work inside an iframe preview."#.into(),
+            user_prompt: format!(
+                r#"Generate {} high-quality HTML slides about: {}.
+
+Output format:
+- Return one complete <!DOCTYPE html> document.
+- Use <section class="slide"> for each slide.
+- Include a fixed or sticky navigation control only if it improves the experience.
+- Include a refined visual system: typography, colors, layout rhythm, responsive constraints, and meaningful decorative elements.
+- If the topic implies motion or particle effects, use performant Canvas/requestAnimationFrame and keep the first frame visually meaningful.
+- Return ONLY the HTML document."#,
+                num_slides, topic
+            ),
             context: Some(r#"Example format:
-<section class="slide">
-  <h2 style="color:#2563EB;font-size:28px">Slide Title Here</h2>
-  <ul style="font-size:18px;line-height:1.8">
-    <li>Key point one with details</li>
-    <li>Key point two with details</li>
-  </ul>
-</section>"#.into()),
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deck title</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; overflow: hidden; }
+    .deck { height: 100vh; overflow-y: auto; scroll-snap-type: y mandatory; }
+    .slide { min-height: 100vh; scroll-snap-align: start; padding: clamp(32px, 6vw, 88px); box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <section class="slide"><h1>Slide Title</h1><p>Clear story content.</p></section>
+  </main>
+</body>
+</html>"#.into()),
         };
         let resp = self.call_ai(&prompt).await?;
+        let trimmed = resp.content.trim();
+        if trimmed.to_lowercase().contains("<!doctype html") || trimmed.to_lowercase().contains("<html") {
+            return Ok(vec![trimmed.to_string()]);
+        }
+
         // Split by <section class="slide"> and reconstruct
         let slides: Vec<String> = resp.content
             .split("</section>")

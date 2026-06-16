@@ -23,6 +23,14 @@ interface PreviewState {
 
 const textPreviewKinds = new Set<PreviewKind>(['html', 'markdown']);
 
+export const PREVIEWABLE_EXTENSIONS = [
+  'html', 'htm', 'xhtml',
+  'mp4', 'webm', 'ogg', 'mov', 'm4v',
+  'pdf',
+  'md', 'markdown',
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp',
+];
+
 export function getPreviewKind(name: string): PreviewKind | null {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (['html', 'htm', 'xhtml'].includes(ext)) return 'html';

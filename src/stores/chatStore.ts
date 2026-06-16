@@ -1,8 +1,17 @@
 import { create } from 'zustand';
-import type { AgentToolEvent, ChatMessage, WorkflowStep } from '../types';
+import type { AgentToolEvent, ChatMessage, ProcessingStep, QueuedRequest, WorkflowStep } from '../types';
 import { runAgentLoop, type LlmMessage } from '../lib/agentLoop';
 import { getLanguage, t, type Lang } from '../lib/i18n';
-import { usePreviewStore } from './previewStore';
+import { PREVIEWABLE_EXTENSIONS, usePreviewStore } from './previewStore';
+import {
+  buildHtmlSkillPrompt,
+  selectHtmlSkill,
+  skillLabel,
+  summarizeHtmlQuality,
+  validateHtmlQuality,
+  type HtmlQualityCheck,
+  type HtmlSkill,
+} from '../lib/htmlSkills';
 
 const STORAGE_KEY = 'seehtml-chat-history';
 const MEMORY_KEY = 'seehtml-memory';
@@ -12,6 +21,8 @@ interface ChatState {
   messages: ChatMessage[];
   inputValue: string;
   isProcessing: boolean;
+  processingSteps: ProcessingStep[];
+  queuedRequests: QueuedRequest[];
   activeRequestId: string | null;
   htmlDocument: string | null;
   conversationMemory: Record<string, string>;
@@ -50,8 +61,10 @@ Try:
 };
 
 const SYSTEM_PROMPT = `You are SeeHTML AI, an HTML page creation assistant.
-Use the available tools when a request requires opening, parsing, generating, editing, exporting, OCR, or packaging.
-Run as many tool-call iterations as needed internally, but do not expose raw tool logs to the user.
+You are the reasoning and planning layer before any tool execution.
+First understand the user's intent. Use tools only when the app router exposes a small whitelist for this exact request.
+If no tool is necessary, answer directly or return a complete usable HTML document when the user asks you to create/edit HTML.
+Never call document/export/media tools just because they exist. Do not inspect or export a document unless the user explicitly asked for that operation and the required file/document is available.
 If the user's request is unclear or missing required details, ask a concise follow-up question before using tools. You may ask follow-up questions across multiple turns until the request is actionable.
 If you generate or edit HTML, return complete usable HTML or a concise summary after the tool call.
 Never answer only "Task completed." Explain the concrete result.
@@ -89,6 +102,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: loadSavedMessages(),
   inputValue: '',
   isProcessing: false,
+  processingSteps: [],
+  queuedRequests: [],
   activeRequestId: null,
   htmlDocument: null,
   conversationMemory: loadMemory(),
@@ -102,9 +117,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: async (content: string, imageDataUrl?: string) => {
     const state = get();
-    if ((!content.trim() && !imageDataUrl) || state.isProcessing) return;
+    if (!content.trim() && !imageDataUrl) return;
+    if (state.isProcessing) {
+      queueRequest(set, {
+        id: crypto.randomUUID(),
+        kind: 'message',
+        content,
+        imageDataUrl,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
 
     const displayContent = content.trim() || t('chat.imageDefault');
+    const intent = classifyIntent(content, Boolean(imageDataUrl), Boolean(state.htmlDocument));
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -113,18 +139,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
     const requestId = crypto.randomUUID();
-    set({ messages: [...state.messages, userMsg], inputValue: '', isProcessing: true, activeRequestId: requestId });
+    set({
+      messages: [...state.messages, userMsg],
+      inputValue: '',
+      isProcessing: true,
+      activeRequestId: requestId,
+      processingSteps: createProcessingSteps(intent),
+    });
+    beginProcessingTimeline(set, get, requestId, intent);
 
     try {
       const prompt = imageDataUrl
-        ? await withTimeout(buildImagePrompt(content, imageDataUrl), REQUEST_TIMEOUT_MS, t('chat.timeout'))
-        : withCurrentDocument(content, state.htmlDocument);
+        ? await withTimeout(buildImagePrompt(content, imageDataUrl, intent.htmlSkill), REQUEST_TIMEOUT_MS, t('chat.timeout'))
+        : buildPromptForIntent(content, state.htmlDocument, intent);
 
       const { assistantContent, messages } = await withTimeout(
         runAgentLoop(
           prompt,
           state.messages.filter((m) => m.role !== 'system' || m.id === 'welcome'),
-          { systemPrompt: SYSTEM_PROMPT, maxIterations: imageDataUrl ? 10 : 8 },
+          {
+            systemPrompt: SYSTEM_PROMPT,
+            maxIterations: intent.maxIterations,
+            toolNames: intent.toolNames,
+          },
         ),
         REQUEST_TIMEOUT_MS,
         t('chat.timeout'),
@@ -133,24 +170,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const html = extractHtmlFromAgentOutput(assistantContent, messages);
       const errors = collectToolErrors(messages);
       const toolEvents = collectToolEvents(messages);
+      const htmlQuality = html ? validateHtmlQuality(html, getLanguage()) : [];
       if (html) {
         usePreviewStore.getState().setGeneratedHtml(html, extractTitle(html) || 'AI HTML Preview');
       }
       const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'agent',
-        content: formatAssistantContent(assistantContent, html, errors),
+        content: formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
         timestamp: new Date().toISOString(),
         toolEvents,
       };
 
-      set((s) => s.activeRequestId !== requestId ? {} : ({
-        messages: [...s.messages, agentMsg],
-        isProcessing: false,
-        activeRequestId: null,
-        htmlDocument: html || s.htmlDocument,
-      }));
+      let completed = false;
+      set((s) => {
+        if (s.activeRequestId !== requestId) return {};
+        completed = true;
+        return {
+          messages: [...s.messages, agentMsg],
+          isProcessing: false,
+          processingSteps: [],
+          activeRequestId: null,
+          htmlDocument: html || s.htmlDocument,
+        };
+      });
       get().saveHistory();
+      if (completed) drainQueuedRequest(set, get);
     } catch (e: unknown) {
       appendError(set, get, e, requestId);
     }
@@ -158,9 +203,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendCommand: async (command, params) => {
     const state = get();
-    if (!command.trim() || state.isProcessing) return;
+    if (!command.trim()) return;
+    if (state.isProcessing) {
+      queueRequest(set, {
+        id: crypto.randomUUID(),
+        kind: 'command',
+        content: command,
+        params,
+        createdAt: new Date().toISOString(),
+      });
+      return;
+    }
 
     const parsed = parseCommand(command);
+    const intent = classifyIntent(command, false, Boolean(state.htmlDocument));
+    const commandHtmlSkill = parsed.cmd === 'ai' || parsed.cmd === 'generate'
+      ? selectHtmlSkill(parsed.rest, 'create')
+      : parsed.cmd === 'theme' || parsed.cmd === 'style'
+      ? selectHtmlSkill(parsed.rest, 'edit')
+      : undefined;
     const commandParams = isRecord(params) ? params : {};
     const displayCommand = commandParams.path ? `${command} ${String(commandParams.path)}` : command;
     const userMsg: ChatMessage = {
@@ -170,7 +231,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
     const requestId = crypto.randomUUID();
-    set({ messages: [...state.messages, userMsg], inputValue: '', isProcessing: true, activeRequestId: requestId });
+    set({
+      messages: [...state.messages, userMsg],
+      inputValue: '',
+      isProcessing: true,
+      activeRequestId: requestId,
+      processingSteps: createProcessingSteps(intent),
+    });
+    beginProcessingTimeline(set, get, requestId, intent);
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
@@ -183,11 +251,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (!path) {
           responseContent = t('chat.cancelled');
         } else {
-          const result = await withTimeout(invoke('open_html_file', { path }), REQUEST_TIMEOUT_MS, t('chat.timeout'));
-          nextHtml = extractHtmlFromWorkflowResult(result);
-          workflowSteps = extractWorkflowSteps(result);
-          responseContent = nextHtml
-            ? `${t('chat.opened')}\n${extractTitle(nextHtml) || fileName(path)}`
+          const doc = await withTimeout(usePreviewStore.getState().openFile(path, fileName(path)), REQUEST_TIMEOUT_MS, t('chat.timeout'));
+          if (doc?.kind === 'html' && doc.content) {
+            nextHtml = doc.content;
+          }
+          responseContent = doc
+            ? `${doc.kind === 'html' ? t('chat.opened') : t('chat.openedFile')}\n${doc.name}`
             : t('chat.noDisplayableResult');
         }
       } else if (parsed.cmd === 'ai' || parsed.cmd === 'generate') {
@@ -242,6 +311,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       if (nextHtml) {
         usePreviewStore.getState().setGeneratedHtml(nextHtml, extractTitle(nextHtml) || 'AI HTML Preview');
+        if (commandHtmlSkill) {
+          responseContent = `${responseContent}\n${summarizeHtmlQuality(
+            validateHtmlQuality(nextHtml, getLanguage()),
+            commandHtmlSkill,
+            getLanguage(),
+          )}`;
+        }
       }
 
       const agentMsg: ChatMessage = {
@@ -251,13 +327,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timestamp: new Date().toISOString(),
         workflow: workflowSteps,
       };
-      set((s) => s.activeRequestId !== requestId ? {} : ({
-        messages: [...s.messages, agentMsg],
-        isProcessing: false,
-        activeRequestId: null,
-        htmlDocument: nextHtml || s.htmlDocument,
-      }));
+      let completed = false;
+      set((s) => {
+        if (s.activeRequestId !== requestId) return {};
+        completed = true;
+        return {
+          messages: [...s.messages, agentMsg],
+          isProcessing: false,
+          processingSteps: [],
+          activeRequestId: null,
+          htmlDocument: nextHtml || s.htmlDocument,
+        };
+      });
       get().saveHistory();
+      if (completed) drainQueuedRequest(set, get);
     } catch (e: unknown) {
       appendError(set, get, e, requestId);
     }
@@ -275,6 +358,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((s) => ({
       messages: [...s.messages, stopMsg],
       isProcessing: false,
+      processingSteps: [],
+      queuedRequests: [],
       activeRequestId: null,
     }));
     get().saveHistory();
@@ -305,7 +390,194 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 }));
 
-async function buildImagePrompt(content: string, imageDataUrl: string): Promise<string> {
+type SetChatState = (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void;
+
+interface AgentIntent {
+  id: string;
+  title: string;
+  summary: string;
+  toolNames: string[];
+  maxIterations: number;
+  wantsHtmlOutput: boolean;
+  htmlSkill?: HtmlSkill;
+}
+
+function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): AgentIntent {
+  const text = content.trim();
+  const lower = text.toLowerCase();
+  const zh = getLanguage() === 'zh';
+  const createWords = /(生成|创建|做一个|做个|写一个|写个|设计|制作|页面|网页|html|动效|粒子|炫酷|landing|create|generate|make|build|design)/i;
+  const editWords = /(修改|优化|改成|换成|调整|美化|润色|主题|风格|edit|update|change|theme|style|polish)/i;
+  const exportWords = /(导出|输出|转成|转为|转换|发布|打包|export|convert|publish|package|pptx|markdown|\bmd\b|mp4|video|png|pdf)/i;
+  const mediaWords = /(视频|音频|字幕|媒体|mp4|mov|webm|srt|vtt|video|audio|subtitle|media)/i;
+
+  if (hasImage) {
+    const htmlSkill = selectHtmlSkill(text, 'image');
+    return {
+      id: 'image-to-html',
+      title: zh ? '图片理解' : 'Image understanding',
+      summary: zh
+        ? `先识别图片内容，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
+        : `Read the image first, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
+      toolNames: [],
+      maxIterations: 1,
+      wantsHtmlOutput: true,
+      htmlSkill,
+    };
+  }
+
+  const asksCreate = createWords.test(text);
+  const asksEdit = hasHtml && editWords.test(text);
+  const asksExportOnly = exportWords.test(text) && !asksCreate && !asksEdit;
+  const asksMediaOnly = mediaWords.test(text) && !asksCreate && !asksEdit && !asksExportOnly;
+
+  if (asksCreate || asksEdit) {
+    const htmlSkill = selectHtmlSkill(text, asksEdit ? 'edit' : 'create');
+    return {
+      id: asksEdit ? 'edit-html' : 'generate-html',
+      title: zh ? (asksEdit ? '修改 HTML' : '生成 HTML') : (asksEdit ? 'Edit HTML' : 'Generate HTML'),
+      summary: zh
+        ? `LLM 直接生成或修改 HTML，内置 ${skillLabel(htmlSkill, 'zh')} 质量约束，完成后自动刷新中间预览。`
+        : `The LLM writes or edits HTML with the built-in ${skillLabel(htmlSkill, 'en')}, then the preview refreshes.`,
+      toolNames: [],
+      maxIterations: 1,
+      wantsHtmlOutput: true,
+      htmlSkill,
+    };
+  }
+
+  if (asksExportOnly) {
+    return {
+      id: 'export-plan',
+      title: zh ? '导出判断' : 'Export routing',
+      summary: zh
+        ? '先判断当前文档和目标格式，缺少条件时先追问，不盲目调用导出工具。'
+        : 'Check the current document and target format first; ask if required data is missing.',
+      toolNames: [],
+      maxIterations: 1,
+      wantsHtmlOutput: false,
+    };
+  }
+
+  if (asksMediaOnly) {
+    return {
+      id: 'media-plan',
+      title: zh ? '媒体判断' : 'Media routing',
+      summary: zh
+        ? '先确认媒体路径和操作目标；没有明确文件时不会调用媒体工具。'
+        : 'Confirm the media path and goal first; no media tool runs without a concrete file.',
+      toolNames: [],
+      maxIterations: 1,
+      wantsHtmlOutput: false,
+    };
+  }
+
+  return {
+    id: 'chat',
+    title: zh ? '需求理解' : 'Understand request',
+    summary: zh ? '普通对话或需求澄清，本轮不需要工具。' : 'Regular chat or clarification; no tools needed.',
+    toolNames: [],
+    maxIterations: 1,
+    wantsHtmlOutput: false,
+  };
+}
+
+function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
+  const zh = getLanguage() === 'zh';
+  const toolDetail = intent.toolNames.length > 0
+    ? `${zh ? '仅开放工具：' : 'Allowed tools only: '}${intent.toolNames.join(', ')}`
+    : (zh ? '本轮无需工具，避免无关工具链。' : 'No tools for this turn, avoiding unrelated tool calls.');
+  const skillDetail = intent.htmlSkill
+    ? `${zh ? '内置质量 Skill：' : 'Built-in quality skill: '}${skillLabel(intent.htmlSkill, getLanguage())}`
+    : toolDetail;
+  return [
+    {
+      id: 'understand',
+      title: zh ? 'LLM 理解问题' : 'LLM understands',
+      detail: intent.summary,
+      status: 'active',
+    },
+    {
+      id: 'route',
+      title: zh ? 'Agent 编排' : 'Agent routing',
+      detail: skillDetail,
+      status: 'pending',
+    },
+    {
+      id: 'execute',
+      title: intent.toolNames.length > 0 ? (zh ? '执行工具轮' : 'Run tool turns') : (zh ? '直接生成结果' : 'Generate directly'),
+      detail: intent.toolNames.length > 0
+        ? (zh ? '按白名单顺序收集工具结果。' : 'Collect tool results from the whitelist.')
+        : (zh ? '由 LLM 输出结果，缺信息时先追问。' : 'The LLM responds directly or asks a follow-up.'),
+      status: 'pending',
+    },
+    {
+      id: 'preview',
+      title: intent.wantsHtmlOutput ? (zh ? '质量检查并预览' : 'Quality check and preview') : (zh ? '更新预览' : 'Update preview'),
+      detail: intent.wantsHtmlOutput
+        ? (zh ? '检查完整文档、viewport、样式、响应式和动效约束后写入中间预览。' : 'Check document structure, viewport, styles, responsiveness, and motion before preview.')
+        : (zh ? '整理最终回复并保留上下文。' : 'Prepare the final reply and keep context.'),
+      status: 'pending',
+    },
+  ];
+}
+
+function beginProcessingTimeline(
+  set: SetChatState,
+  get: () => ChatState,
+  requestId: string,
+  intent: AgentIntent,
+) {
+  const stepCount = createProcessingSteps(intent).length;
+  const delays = [320, 850, 1450, 2200];
+  for (let index = 1; index < stepCount; index += 1) {
+    window.setTimeout(() => {
+      if (get().activeRequestId !== requestId) return;
+      set((s) => ({
+        processingSteps: s.processingSteps.map((step, i) => ({
+          ...step,
+          status: i < index ? 'done' : i === index ? 'active' : 'pending',
+        })),
+      }));
+    }, delays[index - 1] ?? 1200);
+  }
+}
+
+function queueRequest(set: SetChatState, request: QueuedRequest) {
+  set((s) => ({
+    inputValue: '',
+    queuedRequests: [...s.queuedRequests, request],
+  }));
+}
+
+function drainQueuedRequest(set: SetChatState, get: () => ChatState) {
+  window.setTimeout(() => {
+    const state = get();
+    if (state.isProcessing || state.queuedRequests.length === 0) return;
+    const [next, ...rest] = state.queuedRequests;
+    set({ queuedRequests: rest });
+    if (next.kind === 'command') {
+      void get().sendCommand(next.content, next.params);
+      return;
+    }
+    void get().sendMessage(next.content, next.imageDataUrl);
+  }, 80);
+}
+
+function buildPromptForIntent(content: string, html: string | null, intent: AgentIntent): string {
+  const base = html ? withCurrentDocument(content, html) : content;
+  if (!intent.wantsHtmlOutput) return base;
+  const qualityPrompt = intent.htmlSkill ? buildHtmlSkillPrompt(intent.htmlSkill, getLanguage()) : '';
+
+  return `${base}
+
+When the request is to create or edit a page, return ONLY one complete <!DOCTYPE html> document with inline CSS and JavaScript if needed.
+The HTML must be directly previewable in an iframe. Do not call tools unless the router has explicitly exposed one.
+
+${qualityPrompt}`;
+}
+
+async function buildImagePrompt(content: string, imageDataUrl: string, htmlSkill?: HtmlSkill): Promise<string> {
   let ocrText = '';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -317,6 +589,7 @@ async function buildImagePrompt(content: string, imageDataUrl: string): Promise<
   const userIntent = content.trim();
   const hasSubstantialText = ocrText.length > 30;
   const hasSomeText = ocrText.length > 3;
+  const qualityPrompt = htmlSkill ? `\n\n${buildHtmlSkillPrompt(htmlSkill, getLanguage())}` : '';
 
   if (hasSubstantialText) {
     return `I am sending a screenshot or document image.
@@ -328,7 +601,7 @@ ${ocrText}
 
 ${userIntent || 'Generate a complete HTML page that faithfully reproduces the layout, colors, text hierarchy, and visual structure.'}
 
-Return a complete <!DOCTYPE html> document with inline CSS.`;
+Return a complete <!DOCTYPE html> document with inline CSS.${qualityPrompt}`;
   }
 
   if (hasSomeText) {
@@ -341,12 +614,12 @@ ${ocrText}
 
 ${userIntent || 'Create a complete marketing landing page inspired by this image.'}
 
-Return a complete <!DOCTYPE html> document with inline CSS.`;
+Return a complete <!DOCTYPE html> document with inline CSS.${qualityPrompt}`;
   }
 
   return `${userIntent || 'Analyze the image intent and create a visually polished landing page.'}
 
-No substantial OCR text was found. Create a complete responsive <!DOCTYPE html> document with inline CSS.`;
+No substantial OCR text was found. Create a complete responsive <!DOCTYPE html> document with inline CSS.${qualityPrompt}`;
 }
 
 function withCurrentDocument(content: string, html: string | null): string {
@@ -378,7 +651,7 @@ async function resolveOpenPath(rest: string, params: Record<string, unknown>): P
   const { open } = await import('@tauri-apps/plugin-dialog');
   const selected = await open({
     multiple: false,
-    filters: [{ name: 'HTML', extensions: ['html', 'htm', 'xhtml'] }],
+    filters: [{ name: 'HTML / Video / PDF / Markdown / Image', extensions: PREVIEWABLE_EXTENSIONS }],
   });
   return typeof selected === 'string' ? selected : null;
 }
@@ -496,16 +769,25 @@ ${html}
 </html>`;
 }
 
-function formatAssistantContent(assistantContent: string, html: string | null, errors: string[]): string {
+function formatAssistantContent(
+  assistantContent: string,
+  html: string | null,
+  errors: string[],
+  htmlSkill?: HtmlSkill,
+  htmlQuality: HtmlQualityCheck[] = [],
+): string {
   if (errors.length > 0) return `${getLanguage() === 'zh' ? '工具执行失败：' : 'Tool execution failed:'}\n${errors[0]}`;
 
   const clean = assistantContent.trim();
   if (html) {
+    const qualitySummary = htmlQuality.length > 0
+      ? `\n${summarizeHtmlQuality(htmlQuality, htmlSkill, getLanguage())}`
+      : '';
     const contentIsHtml = Boolean(extractHtmlFromText(clean));
     if (!clean || contentIsHtml || isGenericCompletion(clean) || clean.length > 2000) {
-      return t('chat.generated');
+      return `${t('chat.generated')}${qualitySummary}`;
     }
-    return clean;
+    return `${clean}${qualitySummary}`;
   }
 
   if (clean && !isGenericCompletion(clean)) return clean;
@@ -730,7 +1012,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
 }
 
 function appendError(
-  set: (partial: Partial<ChatState> | ((state: ChatState) => Partial<ChatState>)) => void,
+  set: SetChatState,
   get: () => ChatState,
   e: unknown,
   requestId?: string,
@@ -742,10 +1024,17 @@ function appendError(
     content: `Error: ${em}`,
     timestamp: new Date().toISOString(),
   };
-  set((s) => requestId && s.activeRequestId !== requestId ? {} : ({
-    messages: [...s.messages, errMsg],
-    isProcessing: false,
-    activeRequestId: null,
-  }));
+  let completed = false;
+  set((s) => {
+    if (requestId && s.activeRequestId !== requestId) return {};
+    completed = true;
+    return {
+      messages: [...s.messages, errMsg],
+      isProcessing: false,
+      processingSteps: [],
+      activeRequestId: null,
+    };
+  });
   get().saveHistory();
+  if (completed) drainQueuedRequest(set, get);
 }

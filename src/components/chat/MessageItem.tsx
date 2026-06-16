@@ -43,7 +43,7 @@ function ToolTrace({ events }: { events: AgentToolEvent[] }) {
   return (
     <details className='mt-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]/70 px-2 py-1.5 text-[11px]'>
       <summary className='cursor-pointer select-none font-medium text-[var(--color-text-secondary)]'>
-        Tool turns · {events.length}
+        工具轮 · {events.length}
       </summary>
       <div className='mt-2 space-y-2'>
         {events.map((event, index) => (
@@ -53,14 +53,14 @@ function ToolTrace({ events }: { events: AgentToolEvent[] }) {
               <code className='font-mono text-[11px] text-[var(--color-accent)]'>{event.name}</code>
             </div>
             {event.arguments !== undefined && (
-              <pre className='mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 font-mono text-[10px] text-[var(--color-text-secondary)]'>
-                {formatValue(event.arguments)}
-              </pre>
+              <div className='mt-1 rounded-lg bg-black/5 p-2 font-mono text-[10px] text-[var(--color-text-secondary)]'>
+                {formatValue(event.arguments, 360)}
+              </div>
             )}
             {event.result !== undefined && (
-              <pre className='mt-1 max-h-28 overflow-auto whitespace-pre-wrap rounded-lg bg-black/5 p-2 font-mono text-[10px] text-[var(--color-text-secondary)]'>
-                {formatValue(event.result)}
-              </pre>
+              <div className='mt-1 rounded-lg bg-black/5 p-2 text-[10px] text-[var(--color-text-secondary)]'>
+                {formatToolResult(event.result)}
+              </div>
             )}
           </div>
         ))}
@@ -99,8 +99,56 @@ function formatStatus(status: WorkflowStep['status']): string {
   return 'Done';
 }
 
-function formatValue(value: unknown): string {
+function formatValue(value: unknown, maxLength = 1200): string {
   const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
   if (!text) return '';
-  return text.length > 1200 ? `${text.slice(0, 1200)}\n...` : text;
+  return text.length > maxLength ? `${text.slice(0, maxLength)}\n...` : text;
+}
+
+function formatToolResult(value: unknown): string {
+  const error = extractError(value);
+  if (error) return `失败：${error}`;
+  const path = extractPath(value);
+  if (path) return `输出：${path}`;
+  const html = extractHtml(value);
+  if (html) return '已返回 HTML，预览已刷新。';
+  return formatValue(value, 420);
+}
+
+function extractError(value: unknown): string | null {
+  if (typeof value === 'string') return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const error = extractError(item);
+      if (error) return error;
+    }
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  return typeof record.error === 'string' ? record.error : null;
+}
+
+function extractPath(value: unknown): string | null {
+  if (typeof value === 'string') return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const path = extractPath(item);
+      if (path) return path;
+    }
+    return null;
+  }
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  for (const key of ['output_path', 'package_path', 'path']) {
+    if (typeof record[key] === 'string') return record[key];
+  }
+  return null;
+}
+
+function extractHtml(value: unknown): boolean {
+  if (typeof value === 'string') return /<!doctype html|<html[\s>]|<section[\s>]/i.test(value);
+  if (Array.isArray(value)) return value.some(extractHtml);
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).some(extractHtml);
 }

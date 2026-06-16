@@ -53,6 +53,7 @@ export async function runAgentLoop(
   options?: {
     systemPrompt?: string;
     maxIterations?: number;
+    toolNames?: string[];
   }
 ): Promise<{
   assistantContent: string;
@@ -60,6 +61,7 @@ export async function runAgentLoop(
   messages: LlmMessage[];
 }> {
   const { invoke } = await import('@tauri-apps/api/core');
+  const tools = await loadToolsForIntent(invoke, options?.toolNames);
 
   // Build LlmMessage array from conversation history + new user message
   const llmMessages: LlmMessage[] = [];
@@ -79,7 +81,7 @@ export async function runAgentLoop(
   // Call backend agent_chat
   const result = await invoke('agent_chat', {
     messages: llmMessages,
-    tools: null, // null = auto-build from registered agents
+    tools,
     systemPrompt: options?.systemPrompt || null,
     maxIterations: options?.maxIterations || 10,
   });
@@ -107,6 +109,23 @@ export async function runAgentLoop(
     toolCalls,
     messages: responseMessages,
   };
+}
+
+let cachedTools: ToolDefinition[] | null = null;
+
+async function loadToolsForIntent(
+  invoke: <T = unknown>(cmd: string, args?: Record<string, unknown>) => Promise<T>,
+  toolNames?: string[],
+): Promise<ToolDefinition[] | null> {
+  if (!toolNames) return null;
+  if (toolNames.length === 0) return [];
+
+  if (!cachedTools) {
+    cachedTools = await invoke<ToolDefinition[]>('get_tools');
+  }
+
+  const allowed = new Set(toolNames);
+  return cachedTools.filter((tool) => allowed.has(tool.name));
 }
 
 /**

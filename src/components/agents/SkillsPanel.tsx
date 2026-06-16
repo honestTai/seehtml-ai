@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useChatStore } from '../../stores/chatStore';
+import { HTML_SKILLS } from '../../lib/htmlSkills';
 
 interface Skill {
   id: string;
@@ -11,6 +12,24 @@ interface Skill {
 }
 
 const skills: Skill[] = [
+  {
+    id: 'frontend-slides-quality', name: 'Frontend Slides Skill', emoji: '🧩',
+    description: 'Built-in HTML quality skill for deck-like pages: full HTML document, responsive slide layout, polished visual hierarchy, and iframe-safe preview.',
+    tools: ['html.skill.frontend_slides', 'html.quality_gate'],
+    naturalPrompt: '使用 Frontend Slides Skill 生成一套高质量 HTML 演示页：',
+  },
+  {
+    id: 'motion-html-quality', name: 'Motion HTML Skill', emoji: '✨',
+    description: 'Built-in HTML quality skill for particles, Canvas, animation, and MP4-ready looping pages.',
+    tools: ['html.skill.motion_html', 'html.quality_gate'],
+    naturalPrompt: '使用 Motion HTML Skill 生成一个高质量动效 HTML：',
+  },
+  {
+    id: 'landing-html-quality', name: 'Landing HTML Skill', emoji: '🌐',
+    description: 'Built-in HTML quality skill for landing pages and product pages with responsive layout, strong hierarchy, and polished copy.',
+    tools: ['html.skill.landing_html', 'html.quality_gate'],
+    naturalPrompt: '使用 Landing HTML Skill 生成一个高质量页面：',
+  },
   {
     id: 'slide-gen', name: 'Slide Generator', emoji: '📊',
     description: 'Generate HTML marketing pages from any topic using AI. Creates styled, structured page content.',
@@ -83,14 +102,13 @@ export function SkillsPanel() {
   return (
     <div className="py-2">
       <div className="px-3 py-1 text-[10px] font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">
-        Skills ({skills.length})
+        Skills ({skills.length}) · HTML Quality {HTML_SKILLS.length}
       </div>
       {skills.map((skill) => (
         <div key={skill.id} className="mx-2 mb-0.5">
           <button
             onClick={() => setExpanded(expanded === skill.id ? null : skill.id)}
-            disabled={isProcessing}
-            className="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-bg-tertiary)] transition-colors text-left disabled:opacity-50"
+            className="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-bg-tertiary)] transition-colors text-left"
           >
             <span className="text-sm">{skill.emoji}</span>
             <span className="text-xs text-[var(--color-text-primary)] flex-1">{skill.name}</span>
@@ -130,10 +148,9 @@ export function SkillsPanel() {
 
               <button
                 onClick={() => handleRunSkill(skill)}
-                disabled={isProcessing}
-                className="text-[11px] px-2 py-0.5 bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white rounded disabled:opacity-50"
+                className="text-[11px] px-2 py-0.5 bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white rounded"
               >
-                {isProcessing ? '⏳ Processing...' : '▶ Run via AI Agent'}
+                {isProcessing ? '追加到 Agent 队列' : '▶ Run via AI Agent'}
               </button>
             </div>
           )}

@@ -44,6 +44,24 @@ export interface ChatMessage {
   toolEvents?: AgentToolEvent[];
 }
 
+export type ProcessingStepStatus = "pending" | "active" | "done" | "error";
+
+export interface ProcessingStep {
+  id: string;
+  title: string;
+  detail: string;
+  status: ProcessingStepStatus;
+}
+
+export interface QueuedRequest {
+  id: string;
+  kind: "message" | "command";
+  content: string;
+  imageDataUrl?: string;
+  params?: unknown;
+  createdAt: string;
+}
+
 export interface AgentToolEvent {
   id: string;
   name: string;
