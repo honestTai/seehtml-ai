@@ -69,7 +69,7 @@ async function setupPython() {
     const pthFile = path.join(PYTHON_DIR, 'python312._pth');
     let pthContent = fs.readFileSync(pthFile, 'utf-8');
     pthContent = pthContent.replace('#import site', 'import site');
-    pthContent += '\nLib\site-packages\n';
+    pthContent += '\nLib\\site-packages\n';
     fs.writeFileSync(pthFile, pthContent);
 
     // Download and install pip

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { PREVIEWABLE_EXTENSIONS, getPreviewKind, isPreviewableName, usePreviewStore } from '../../stores/previewStore';
+import { useUIStore } from '../../stores/uiStore';
 import { useI18n } from '../../lib/i18n';
 import type { FileTreeNode } from '../../types';
 
@@ -30,6 +31,8 @@ export function FileExplorer() {
   const setHtmlDocument = useChatStore((s) => s.setHtmlDocument);
   const openPreviewFile = usePreviewStore((s) => s.openFile);
   const activePath = usePreviewStore((s) => s.document?.path);
+  const projectPath = useUIStore((s) => s.projectPath);
+  const setProjectPath = useUIStore((s) => s.setProjectPath);
   const [root, setRoot] = useState<FileTreeNode | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -67,20 +70,21 @@ export function FileExplorer() {
   }, [loadDirectory, t]);
 
   useEffect(() => {
-    loadRoot();
-  }, [loadRoot]);
+    loadRoot(projectPath);
+  }, [loadRoot, projectPath]);
 
   const chooseFolder = useCallback(async () => {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const selected = await open({ directory: true, multiple: false });
       if (typeof selected === 'string') {
+        setProjectPath(selected);
         await loadRoot(selected);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : t('sidebar.unavailable'));
     }
-  }, [loadRoot, t]);
+  }, [loadRoot, setProjectPath, t]);
 
   const openPreviewPath = useCallback(async (path: string) => {
     const doc = await openPreviewFile(path, fileName(path));

@@ -28,6 +28,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../ffmpeg/bin/ffmpeg.exe": "ffmpeg/bin/ffmpeg.exe",
+      "../ffmpeg/bin/ffprobe.exe": "ffmpeg/bin/ffprobe.exe"
+    },
     "icon": [
       "icons/icon.ico"
     ]

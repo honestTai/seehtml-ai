@@ -16,10 +16,11 @@ export function ChatPanel() {
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isProcessing, processingSteps, queuedRequests]);
 
   return (
-    <aside className='w-96 flex-shrink-0 overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-[var(--shadow-soft)] max-lg:h-[360px] max-lg:w-full'>
+    <section className='min-w-[420px] flex-[1.05] overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:h-[420px] max-lg:w-full max-lg:flex-none max-lg:border-b max-lg:border-r-0'>
       <div className='flex h-full min-h-0 flex-col'>
-      <div className='flex h-11 items-center border-b border-[var(--color-border)] px-4'>
-        <span className='text-xs font-semibold text-[var(--color-text-primary)] tracking-wide'>💬 {t('chat.title')}</span>
+      <div className='flex h-12 items-center border-b border-[var(--color-border)] px-4'>
+        <span className='text-xs font-semibold text-[var(--color-text-primary)] tracking-wide'>{t('sessions.current')}</span>
+        <span className='ml-2 rounded-md bg-[var(--color-bg-tertiary)] px-2 py-0.5 text-[10px] text-[var(--color-text-secondary)]'>Agent</span>
         <span className='ml-auto rounded-full bg-[var(--color-bg-tertiary)] px-2 py-0.5 text-xs text-[var(--color-text-secondary)]'>{messages.length}</span>
       </div>
       <div className='min-h-0 flex-1 space-y-3 overflow-y-auto p-3'>
@@ -31,7 +32,7 @@ export function ChatPanel() {
       </div>
       <ChatInput />
       </div>
-    </aside>
+    </section>
   );
 }
 

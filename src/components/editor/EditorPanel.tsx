@@ -8,7 +8,7 @@ import { useI18n } from '../../lib/i18n';
 export function EditorPanel() {
   const { t } = useI18n();
   const [currentSlide, setCurrentSlide] = useState(0);
-  const [capturedImages, setCapturedImages] = useState<string[]>([]);
+  const [, setCapturedImages] = useState<string[]>([]);
   const htmlDoc = useChatStore((s) => s.htmlDocument);
   const previewDoc = usePreviewStore((s) => s.document);
   const isLoading = usePreviewStore((s) => s.isLoading);
@@ -26,21 +26,10 @@ export function EditorPanel() {
     });
   }, []);
 
-  const handleExportImage = useCallback(async () => {
-    const dataUrl = capturedImages[currentSlide];
-    if (!dataUrl) return;
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('save_image', { dataUrl, index: currentSlide });
-    } catch (e) {
-      console.error('Export image failed:', e);
-    }
-  }, [capturedImages, currentSlide]);
-
   return (
-    <section className='min-w-0 flex-1 overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-[var(--shadow-soft)] max-lg:h-[430px] max-lg:flex-none'>
+    <section className='min-w-[460px] flex-[1.15] overflow-hidden bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:h-[520px] max-lg:flex-none'>
       <div className='flex h-full min-h-0 flex-col overflow-hidden'>
-        <div className='flex h-11 flex-shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4'>
+        <div className='flex h-12 flex-shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4'>
           <div className='min-w-0 flex-1'>
             <div className='truncate text-sm font-semibold text-[var(--color-text-primary)]'>
               {activeDoc?.name || t('preview.emptyTitle')}
@@ -49,18 +38,10 @@ export function EditorPanel() {
               {activeDoc?.path || t('preview.emptyHint')}
             </div>
           </div>
-          {activeDoc?.kind === 'html' && capturedImages[currentSlide] && (
-            <button
-              onClick={handleExportImage}
-              className='rounded-full bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-[var(--color-accent-hover)]'
-            >
-              {t('editor.savePng')}
-            </button>
-          )}
         </div>
 
         <div className='min-h-0 flex-1 bg-[var(--color-bg-primary)] p-2'>
-          <div className='h-full overflow-hidden rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]'>
+          <div className='h-full overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]'>
             {isLoading ? (
               <PreviewState icon='...' title={t('preview.loading')} />
             ) : error ? (

@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { AppShell } from './components/layout/AppShell';
+import { ActivityRail } from './components/layout/ActivityRail';
 import { Sidebar } from './components/layout/Sidebar';
 import { EditorPanel } from './components/editor/EditorPanel';
 import { ChatPanel } from './components/chat/ChatPanel';
@@ -30,9 +31,10 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col bg-[var(--color-bg-primary)]">
       <AppShell>
+        <ActivityRail />
         {sidebarOpen && <Sidebar />}
-        <EditorPanel />
         <ChatPanel />
+        <EditorPanel />
       </AppShell>
       <StatusBar />
       {commandPaletteOpen && <CommandPalette />}

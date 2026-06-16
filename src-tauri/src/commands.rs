@@ -18,7 +18,8 @@ pub struct FileTreeNode {
 fn should_skip_tree_entry(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".idea" | ".vscode" | "node_modules" | "target" | "dist" | "python"
+        ".git" | ".idea" | ".vscode" | "node_modules" | "target" | "dist" | "output"
+            | "python" | "ffmpeg"
             | "SeeHTML-AI-portable" | "__pycache__"
     )
 }
@@ -180,16 +181,14 @@ pub async fn export_document(
 ) -> CmdResult<serde_json::Value> {
     let theme: PresentationTheme = theme.and_then(|t| serde_json::from_value(t).ok()).unwrap_or_default();
     let title = extract_html_title(&html).unwrap_or_else(|| "document".into());
+    let sections = extract_page_sections(&html, &title);
     let doc = Document {
         id: uuid::Uuid::new_v4().to_string(),
         title: title.clone(),
         source_path: None,
         html_content: html.clone(),
         metadata: DocumentMetadata::default(),
-        sections: vec![DocumentSection {
-            id: "s1".into(), level: 1, heading: Some(title.clone()),
-            content: strip_html_tags(&html), assets: vec![], style_id: None
-        }],
+        sections,
         assets: vec![],
         styles: vec![],
     };
@@ -206,7 +205,11 @@ pub async fn export_document(
         }
         "markdown" | "md" => {
             let path = output_path.clone().unwrap_or_else(|| default_path("md"));
-            let markdown = format!("# {}\n\n{}", doc.title, strip_html_tags(&html));
+            let mut markdown = format!("# {}\n\n", doc.title);
+            for (index, section) in doc.sections.iter().enumerate() {
+                let heading = section.heading.as_deref().unwrap_or("Page");
+                markdown.push_str(&format!("## {}. {}\n\n{}\n\n", index + 1, heading, section.content));
+            }
             write_text(&path, &markdown).await?;
             serde_json::json!({"output_path": path, "format": "markdown"})
         }
@@ -239,6 +242,64 @@ fn extract_html_title(html: &str) -> Option<String> {
     let end = lower[content_start..].find("</title>")?;
     let title = html[content_start..content_start + end].trim();
     if title.is_empty() { None } else { Some(title.into()) }
+}
+
+fn extract_page_sections(html: &str, fallback_title: &str) -> Vec<DocumentSection> {
+    let fragments = extract_section_fragments(html);
+    let page_fragments = if fragments.is_empty() { vec![html.to_string()] } else { fragments };
+
+    page_fragments
+        .iter()
+        .enumerate()
+        .map(|(index, fragment)| {
+            let heading = extract_fragment_heading(fragment)
+                .unwrap_or_else(|| format!("{} {}", fallback_title, index + 1));
+            DocumentSection {
+                id: format!("page-{}", index + 1),
+                level: 1,
+                heading: Some(heading),
+                content: strip_html_tags(fragment),
+                assets: vec![],
+                style_id: None,
+            }
+        })
+        .collect()
+}
+
+fn extract_section_fragments(html: &str) -> Vec<String> {
+    let lower = html.to_lowercase();
+    let mut fragments = Vec::new();
+    let mut pos = 0usize;
+
+    while let Some(rel_start) = lower[pos..].find("<section") {
+        let start = pos + rel_start;
+        let Some(rel_open_end) = lower[start..].find('>') else { break };
+        let open_end = start + rel_open_end + 1;
+        let Some(rel_end) = lower[open_end..].find("</section>") else { break };
+        let end = open_end + rel_end + "</section>".len();
+        fragments.push(html[start..end].to_string());
+        pos = end;
+    }
+
+    fragments
+}
+
+fn extract_fragment_heading(fragment: &str) -> Option<String> {
+    let lower = fragment.to_lowercase();
+    for tag in ["h1", "h2", "h3"] {
+        let open = format!("<{}", tag);
+        let close = format!("</{}>", tag);
+        let Some(start) = lower.find(&open) else { continue };
+        let Some(rel_tag_end) = lower[start..].find('>') else { continue };
+        let tag_end = rel_tag_end + start + 1;
+        let Some(rel_end) = lower[tag_end..].find(&close) else { continue };
+        let end = rel_end + tag_end;
+        let heading = strip_html_tags(&fragment[tag_end..end]);
+        if !heading.trim().is_empty() {
+            return Some(heading);
+        }
+    }
+    None
 }
 
 fn strip_html_tags(html: &str) -> String {
@@ -431,25 +492,59 @@ pub async fn run_ocr(_state: State<'_, AppState>, image_path: String, engine: Op
 
 /// Generate video from slide images using bundled ffmpeg
 #[tauri::command]
-pub async fn generate_video(_state: State<'_, AppState>, _slide_count: u32, output_path: Option<String>) -> CmdResult<String> {
+pub async fn generate_video(
+    _state: State<'_, AppState>,
+    slide_count: u32,
+    output_path: Option<String>,
+    frame_rate: Option<f64>,
+) -> CmdResult<String> {
+    if slide_count == 0 {
+        return Err("No rendered frames found for MP4 export".into());
+    }
+
     let out = output_path.unwrap_or_else(|| "./output/presentation.mp4".into());
     let out_path = std::path::PathBuf::from(&out);
     if let Some(parent) = out_path.parent() {
         tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
     }
 
-    let ffmpeg = resource_path("ffmpeg/ffmpeg.exe");
-    let ffmpeg_cmd = if ffmpeg.exists() { ffmpeg.to_string_lossy().to_string() } else { "ffmpeg".into() };
+    let ffmpeg_cmd = find_ffmpeg_command();
+    let fps = frame_rate.unwrap_or(1.0 / 3.0).clamp(0.1, 60.0);
+    let fps_arg = if (fps.fract()).abs() < f64::EPSILON {
+        format!("{}", fps as u32)
+    } else {
+        format!("{:.3}", fps)
+    };
+    let frame_count_arg = slide_count.to_string();
 
     let status = tokio::process::Command::new(&ffmpeg_cmd)
-        .args(["-y", "-framerate", "1/3", "-i", "./output/slide_%d.png",
-               "-c:v", "libx264", "-r", "30", "-pix_fmt", "yuv420p",
-               "-vf", "scale=1920:1080", &out])
+        .args([
+            "-y",
+            "-framerate", &fps_arg,
+            "-start_number", "0",
+            "-i", "./output/slide_%d.png",
+            "-frames:v", &frame_count_arg,
+            "-c:v", "libx264",
+            "-r", "30",
+            "-pix_fmt", "yuv420p",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            &out,
+        ])
         .status().await
         .map_err(|e| format!("ffmpeg error: {}", e))?;
 
     if status.success() { Ok(out) }
-    else { Err("ffmpeg failed. Ensure slide images exist in ./output/".into()) }
+    else { Err(format!("ffmpeg failed. Command: {}", ffmpeg_cmd)) }
+}
+
+fn find_ffmpeg_command() -> String {
+    for relative in ["ffmpeg/bin/ffmpeg.exe", "ffmpeg/ffmpeg.exe"] {
+        let path = resource_path(relative);
+        if path.exists() {
+            return path.to_string_lossy().to_string();
+        }
+    }
+    "ffmpeg".into()
 }
 
 /// Save document as HTML file

@@ -8,7 +8,7 @@ export function StatusBar() {
   const htmlDoc = useChatStore((s) => s.htmlDocument);
 
   return (
-    <div className='mx-3 mb-3 flex h-7 flex-shrink-0 items-center gap-3 overflow-hidden rounded-full border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 text-[11px] text-[var(--color-text-secondary)] shadow-sm'>
+    <div className='flex h-7 flex-shrink-0 items-center gap-3 overflow-hidden border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 text-[11px] text-[var(--color-text-secondary)]'>
       <span>SeeHTML AI · DeepSeek V4</span>
       <span className='w-px h-3 bg-[var(--color-border)]' />
       <span>{isProcessing ? `⚡ ${t('status.processing')}` : `🟢 ${t('status.ready')}`}</span>
