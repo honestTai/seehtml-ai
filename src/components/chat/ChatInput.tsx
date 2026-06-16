@@ -70,6 +70,7 @@ export function ChatInput() {
 
   return (
     <div className='border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-3'>
+      <div className='mx-auto max-w-5xl'>
       {/* Image preview */}
       {attachedImage && (
         <div className='mb-2 relative inline-block'>
@@ -121,6 +122,7 @@ export function ChatInput() {
       <div className='mt-2 flex flex-wrap gap-x-2 gap-y-1 text-[10px] text-[var(--color-text-secondary)]/60'>
         <span>/open</span><span>/export</span><span>/ai</span><span>/theme</span><span>/publish</span>
         <span className='ml-auto'>🖼️ {t('chat.pasteImage')}</span>
+      </div>
       </div>
     </div>
   );

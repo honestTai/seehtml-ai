@@ -1,4 +1,5 @@
-@import "tailwindcss";
+@import "tailwindcss" source("./");
+@source "../index.html";
 
 /* Light theme (default) */
 :root, .theme-light {

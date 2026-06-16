@@ -1,13 +1,13 @@
-use seehtml_agents::Orchestrator;
-use seehtml_agents::AgentLoop;
-use seehtml_agents::agent_loop::ToolDispatcher;
-use seehtml_agents::document::DocumentAgent;
-use seehtml_agents::content::ContentAgent;
-use seehtml_agents::style::StyleAgent;
-use seehtml_agents::media::MediaAgent;
-use seehtml_agents::export_agent::ExportAgent;
-use seehtml_agents::publish::PublishAgent;
 use seehtml_agents::AgentContext;
+use seehtml_agents::AgentLoop;
+use seehtml_agents::Orchestrator;
+use seehtml_agents::agent_loop::ToolDispatcher;
+use seehtml_agents::content::ContentAgent;
+use seehtml_agents::document::DocumentAgent;
+use seehtml_agents::export_agent::ExportAgent;
+use seehtml_agents::media::MediaAgent;
+use seehtml_agents::publish::PublishAgent;
+use seehtml_agents::style::StyleAgent;
 use seehtml_core::*;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -55,21 +55,23 @@ pub fn run() {
 
     // Create dispatcher that connects AgentLoop to Orchestrator
     // When LLM calls a tool, this dispatcher executes it via the real agents
-    let dispatcher: ToolDispatcher = Arc::new(move |agent_name: &str, action: &str, params: serde_json::Value| {
-        let orch = orch_for_dispatcher.clone();
-        let agent_name = agent_name.to_string();
-        let action = action.to_string();
-        Box::pin(async move {
-            let orch = orch.lock().await;
-            let agent_id = agent_id_from_name(&agent_name)
-                .ok_or_else(|| SeeHtmlError::AgentError {
-                    agent: agent_name.clone(),
-                    message: "Unknown agent".into()
-                })?;
-            let context = AgentContext::default();
-            orch.dispatch(&agent_id, &action, &params, &context).await
-        })
-    });
+    let dispatcher: ToolDispatcher = Arc::new(
+        move |agent_name: &str, action: &str, params: serde_json::Value| {
+            let orch = orch_for_dispatcher.clone();
+            let agent_name = agent_name.to_string();
+            let action = action.to_string();
+            Box::pin(async move {
+                let orch = orch.lock().await;
+                let agent_id =
+                    agent_id_from_name(&agent_name).ok_or_else(|| SeeHtmlError::AgentError {
+                        agent: agent_name.clone(),
+                        message: "Unknown agent".into(),
+                    })?;
+                let context = AgentContext::default();
+                orch.dispatch(&agent_id, &action, &params, &context).await
+            })
+        },
+    );
 
     let agent_loop = Arc::new(AgentLoop::new(ai_config.clone()).with_dispatcher(dispatcher));
 
@@ -86,6 +88,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_html_file,
             commands::list_directory,
+            commands::find_project_entry,
             commands::read_text_file,
             commands::get_document_info,
             commands::list_agents,

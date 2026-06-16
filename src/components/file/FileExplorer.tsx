@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { PREVIEWABLE_EXTENSIONS, getPreviewKind, isPreviewableName, usePreviewStore } from '../../stores/previewStore';
 import { useUIStore } from '../../stores/uiStore';
@@ -37,6 +37,7 @@ export function FileExplorer() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const autoPreviewedProjectRef = useRef<string | null>(null);
 
   const loadDirectory = useCallback(async (path?: string | null) => {
     const tauriWindow = window as unknown as { __TAURI_INTERNALS__?: unknown };
@@ -92,6 +93,50 @@ export function FileExplorer() {
       setHtmlDocument(doc.content);
     }
   }, [openPreviewFile, setHtmlDocument]);
+
+  useEffect(() => {
+    if (!projectPath || autoPreviewedProjectRef.current === projectPath) return;
+    autoPreviewedProjectRef.current = projectPath;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const entry = await invoke<string | null>('find_project_entry', { path: projectPath });
+        if (!cancelled && entry) {
+          await openPreviewPath(entry);
+        }
+      } catch {
+        // The tree itself remains usable even if no default preview can be resolved.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openPreviewPath, projectPath]);
+
+  useEffect(() => {
+    if (projectPath || !root?.path || autoPreviewedProjectRef.current === root.path) return;
+    autoPreviewedProjectRef.current = root.path;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const entry = await invoke<string | null>('find_project_entry', { path: root.path });
+        if (!cancelled && entry) {
+          await openPreviewPath(entry);
+        }
+      } catch {
+        // No default entry is fine; users can still choose a file manually.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openPreviewPath, projectPath, root?.path]);
 
   const chooseFile = useCallback(async () => {
     try {

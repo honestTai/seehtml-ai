@@ -41,27 +41,6 @@ export function Sidebar() {
   return (
     <aside className='w-80 flex-shrink-0 overflow-hidden border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)] max-lg:h-[360px] max-lg:w-full max-lg:border-b max-lg:border-r-0'>
       <div className='flex h-full min-h-0 flex-col'>
-      {/* Language + Theme bar */}
-      <div className='flex h-10 items-center gap-1 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3'>
-        <span className='mr-1 text-[10px] text-[var(--color-text-secondary)]'>SeeHTML AI</span>
-        <span className='h-3 w-px bg-[var(--color-border)]' />
-        <button onClick={() => { setLanguage('zh'); setLang('zh'); }}
-          className={`rounded-lg px-2 py-0.5 text-xs font-medium ${lang==='zh'?'bg-[var(--color-accent)] text-white':'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}>
-          {t('lang.zh')}
-        </button>
-        <button onClick={() => { setLanguage('en'); setLang('en'); }}
-          className={`rounded-lg px-2 py-0.5 text-xs font-medium ${lang==='en'?'bg-[var(--color-accent)] text-white':'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'}`}>
-          {t('lang.en')}
-        </button>
-        <span className='flex-1' />
-        <button onClick={() => { setTheme('light'); setThemeState('light'); }}
-          className={`rounded-lg px-1.5 text-xs ${theme==='light'?'bg-[var(--color-accent)]/20':''}`} title={t('theme.light')}>☀️</button>
-        <button onClick={() => { setTheme('dark'); setThemeState('dark'); }}
-          className={`rounded-lg px-1.5 text-xs ${theme==='dark'?'bg-[var(--color-accent)]/20':''}`} title={t('theme.dark')}>🌙</button>
-        <button onClick={() => { setTheme('auto'); setThemeState('auto'); }}
-          className={`rounded-lg px-1.5 text-xs ${theme==='auto'?'bg-[var(--color-accent)]/20':''}`} title={t('theme.auto')}>🖥️</button>
-      </div>
-
       <div className='border-b border-[var(--color-border)] p-3'>
         <div className='mb-2 flex items-center justify-between'>
           <div>
@@ -80,6 +59,23 @@ export function Sidebar() {
         >
           + {t('project.open')}
         </button>
+        <div className='mt-2 flex items-center gap-1 text-[10px] text-[var(--color-text-secondary)]'>
+          <button onClick={() => { setLanguage('zh'); setLang('zh'); }}
+            className={`rounded-md px-1.5 py-0.5 ${lang==='zh'?'bg-[var(--color-accent)] text-white':'hover:bg-[var(--color-bg-tertiary)]'}`}>
+            {t('lang.zh')}
+          </button>
+          <button onClick={() => { setLanguage('en'); setLang('en'); }}
+            className={`rounded-md px-1.5 py-0.5 ${lang==='en'?'bg-[var(--color-accent)] text-white':'hover:bg-[var(--color-bg-tertiary)]'}`}>
+            {t('lang.en')}
+          </button>
+          <span className='flex-1' />
+          <button onClick={() => { setTheme('light'); setThemeState('light'); }}
+            className={`rounded-md px-1.5 py-0.5 ${theme==='light'?'bg-[var(--color-bg-tertiary)]':''}`} title={t('theme.light')}>☀️</button>
+          <button onClick={() => { setTheme('dark'); setThemeState('dark'); }}
+            className={`rounded-md px-1.5 py-0.5 ${theme==='dark'?'bg-[var(--color-bg-tertiary)]':''}`} title={t('theme.dark')}>🌙</button>
+          <button onClick={() => { setTheme('auto'); setThemeState('auto'); }}
+            className={`rounded-md px-1.5 py-0.5 ${theme==='auto'?'bg-[var(--color-bg-tertiary)]':''}`} title={t('theme.auto')}>🖥️</button>
+        </div>
       </div>
 
       <div className='border-b border-[var(--color-border)] p-3'>

@@ -1,7 +1,7 @@
 use crate::AppState;
 use seehtml_agents::{Agent, AgentContext, AgentLoop};
 use seehtml_core::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::State;
 
 type CmdResult<T> = std::result::Result<T, String>;
@@ -18,14 +18,24 @@ pub struct FileTreeNode {
 fn should_skip_tree_entry(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".idea" | ".vscode" | "node_modules" | "target" | "dist" | "output"
-            | "python" | "ffmpeg"
-            | "SeeHTML-AI-portable" | "__pycache__"
+        ".git"
+            | ".idea"
+            | ".vscode"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "output"
+            | "python"
+            | "ffmpeg"
+            | "SeeHTML-AI-portable"
+            | "__pycache__"
     )
 }
 
 async fn read_directory_node(path: PathBuf) -> CmdResult<FileTreeNode> {
-    let metadata = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?;
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let is_dir = metadata.is_dir();
     let name = path
         .file_name()
@@ -44,7 +54,9 @@ async fn read_directory_node(path: PathBuf) -> CmdResult<FileTreeNode> {
     }
 
     let mut children = Vec::new();
-    let mut entries = tokio::fs::read_dir(&path).await.map_err(|e| e.to_string())?;
+    let mut entries = tokio::fs::read_dir(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
         let child_path = entry.path();
         let child_name = entry.file_name().to_string_lossy().to_string();
@@ -61,7 +73,11 @@ async fn read_directory_node(path: PathBuf) -> CmdResult<FileTreeNode> {
             name: child_name,
             path: child_path.to_string_lossy().to_string(),
             is_dir: child_meta.is_dir(),
-            children: if child_meta.is_dir() { None } else { Some(Vec::new()) },
+            children: if child_meta.is_dir() {
+                None
+            } else {
+                Some(Vec::new())
+            },
             loaded: !child_meta.is_dir(),
         });
     }
@@ -92,20 +108,120 @@ pub async fn list_directory(path: Option<String>) -> CmdResult<FileTreeNode> {
 }
 
 #[tauri::command]
+pub async fn find_project_entry(path: String) -> CmdResult<Option<String>> {
+    let root = PathBuf::from(path);
+    let metadata = tokio::fs::metadata(&root)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !metadata.is_dir() {
+        return Ok(if is_html_file(&root) {
+            Some(root.to_string_lossy().to_string())
+        } else {
+            None
+        });
+    }
+
+    let mut stack = vec![(root.clone(), 0usize)];
+    let mut matches: Vec<(usize, String)> = Vec::new();
+
+    while let Some((dir, depth)) = stack.pop() {
+        if depth > 5 {
+            continue;
+        }
+
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+            let child_path = entry.path();
+            let child_name = entry.file_name().to_string_lossy().to_string();
+            let child_meta = match entry.metadata().await {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
+
+            if child_meta.is_dir() {
+                if !should_skip_tree_entry(&child_name)
+                    || matches!(child_name.as_str(), "dist" | "build")
+                {
+                    stack.push((child_path, depth + 1));
+                }
+                continue;
+            }
+
+            if is_html_file(&child_path) {
+                let score = entry_score(&root, &child_path, depth);
+                matches.push((score, child_path.to_string_lossy().to_string()));
+            }
+        }
+    }
+
+    matches.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    Ok(matches.into_iter().map(|(_, path)| path).next())
+}
+
+fn is_html_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| matches!(ext.to_lowercase().as_str(), "html" | "htm" | "xhtml"))
+        .unwrap_or(false)
+}
+
+fn entry_score(root: &Path, path: &Path, depth: usize) -> usize {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    let relative = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase();
+
+    if file_name == "index.html" && depth == 0 {
+        return 0;
+    }
+    if file_name == "index.htm" && depth == 0 {
+        return 1;
+    }
+    if relative == "dist/index.html" || relative == "build/index.html" {
+        return 2;
+    }
+    if file_name == "index.html" {
+        return 10 + depth;
+    }
+    if matches!(file_name.as_str(), "home.html" | "main.html" | "app.html") {
+        return 30 + depth;
+    }
+    100 + depth
+}
+
+#[tauri::command]
 pub async fn read_text_file(path: String) -> CmdResult<String> {
     let path = PathBuf::from(path);
-    let metadata = tokio::fs::metadata(&path).await.map_err(|e| e.to_string())?;
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("Path is not a file".into());
     }
     if metadata.len() > 20 * 1024 * 1024 {
         return Err("File is too large to preview as text".into());
     }
-    tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())
+    tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn open_html_file(state: State<'_, AppState>, path: String) -> CmdResult<serde_json::Value> {
+pub async fn open_html_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> CmdResult<serde_json::Value> {
     let orch = state.orchestrator.lock().await;
     let ctx = AgentContext::default();
     let params = serde_json::json!({"path": path});
@@ -116,17 +232,26 @@ pub async fn open_html_file(state: State<'_, AppState>, path: String) -> CmdResu
         context: RequestContext::default(),
     };
     let workflow = orch.plan(&req).await.map_err(|e| e.to_string())?;
-    let results = orch.execute_workflow(&workflow.id, &ctx).await.map_err(|e| e.to_string())?;
+    let results = orch
+        .execute_workflow(&workflow.id, &ctx)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(results).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
-pub async fn get_document_info(state: State<'_, AppState>, html_content: String) -> CmdResult<serde_json::Value> {
+pub async fn get_document_info(
+    state: State<'_, AppState>,
+    html_content: String,
+) -> CmdResult<serde_json::Value> {
     let _orch = state.orchestrator.lock().await;
     let ctx = AgentContext::default();
     let params = serde_json::json!({"html": html_content});
     let agent = seehtml_agents::document::DocumentAgent::new();
-    let doc = agent.execute("read_html_string", params, &ctx).await.map_err(|e| e.to_string())?;
+    let doc = agent
+        .execute("read_html_string", params, &ctx)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(doc)
 }
 
@@ -146,18 +271,28 @@ pub async fn execute_agent_action(
 ) -> CmdResult<serde_json::Value> {
     let orch = state.orchestrator.lock().await;
     let ctx = AgentContext::default();
-    let workflow = orch.plan(&UserRequest {
-        id: uuid::Uuid::new_v4().to_string(),
-        command: action.clone(),
-        parameters: params,
-        context: RequestContext::default(),
-    }).await.map_err(|e| e.to_string())?;
-    let results = orch.execute_workflow(&workflow.id, &ctx).await.map_err(|e| e.to_string())?;
+    let workflow = orch
+        .plan(&UserRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            command: action.clone(),
+            parameters: params,
+            context: RequestContext::default(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    let results = orch
+        .execute_workflow(&workflow.id, &ctx)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(results).map_err(|e| e.to_string())?)
 }
 
 #[tauri::command]
-pub async fn run_workflow(state: State<'_, AppState>, command: String, params: serde_json::Value) -> CmdResult<serde_json::Value> {
+pub async fn run_workflow(
+    state: State<'_, AppState>,
+    command: String,
+    params: serde_json::Value,
+) -> CmdResult<serde_json::Value> {
     let orch = state.orchestrator.lock().await;
     let ctx = AgentContext::default();
     let req = UserRequest {
@@ -167,7 +302,10 @@ pub async fn run_workflow(state: State<'_, AppState>, command: String, params: s
         context: RequestContext::default(),
     };
     let workflow = orch.plan(&req).await.map_err(|e| e.to_string())?;
-    let results = orch.execute_workflow(&workflow.id, &ctx).await.map_err(|e| e.to_string())?;
+    let results = orch
+        .execute_workflow(&workflow.id, &ctx)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(results).map_err(|e| e.to_string())?)
 }
 
@@ -179,7 +317,9 @@ pub async fn export_document(
     theme: Option<serde_json::Value>,
     output_path: Option<String>,
 ) -> CmdResult<serde_json::Value> {
-    let theme: PresentationTheme = theme.and_then(|t| serde_json::from_value(t).ok()).unwrap_or_default();
+    let theme: PresentationTheme = theme
+        .and_then(|t| serde_json::from_value(t).ok())
+        .unwrap_or_default();
     let title = extract_html_title(&html).unwrap_or_else(|| "document".into());
     let sections = extract_page_sections(&html, &title);
     let doc = Document {
@@ -208,7 +348,12 @@ pub async fn export_document(
             let mut markdown = format!("# {}\n\n", doc.title);
             for (index, section) in doc.sections.iter().enumerate() {
                 let heading = section.heading.as_deref().unwrap_or("Page");
-                markdown.push_str(&format!("## {}. {}\n\n{}\n\n", index + 1, heading, section.content));
+                markdown.push_str(&format!(
+                    "## {}. {}\n\n{}\n\n",
+                    index + 1,
+                    heading,
+                    section.content
+                ));
             }
             write_text(&path, &markdown).await?;
             serde_json::json!({"output_path": path, "format": "markdown"})
@@ -226,7 +371,9 @@ pub async fn export_document(
 async fn write_bytes(path: &str, data: &[u8]) -> CmdResult<()> {
     let pb = std::path::PathBuf::from(path);
     if let Some(parent) = pb.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     tokio::fs::write(pb, data).await.map_err(|e| e.to_string())
 }
@@ -241,12 +388,23 @@ fn extract_html_title(html: &str) -> Option<String> {
     let content_start = start + "<title>".len();
     let end = lower[content_start..].find("</title>")?;
     let title = html[content_start..content_start + end].trim();
-    if title.is_empty() { None } else { Some(title.into()) }
+    if title.is_empty() {
+        None
+    } else {
+        Some(title.into())
+    }
 }
 
 fn extract_page_sections(html: &str, fallback_title: &str) -> Vec<DocumentSection> {
-    let fragments = extract_section_fragments(html);
-    let page_fragments = if fragments.is_empty() { vec![html.to_string()] } else { fragments };
+    let fragments = extract_section_fragments(html)
+        .into_iter()
+        .filter(|fragment| is_meaningful_section_fragment(fragment))
+        .collect::<Vec<_>>();
+    let page_fragments = if fragments.is_empty() {
+        vec![html.to_string()]
+    } else {
+        fragments
+    };
 
     page_fragments
         .iter()
@@ -273,9 +431,13 @@ fn extract_section_fragments(html: &str) -> Vec<String> {
 
     while let Some(rel_start) = lower[pos..].find("<section") {
         let start = pos + rel_start;
-        let Some(rel_open_end) = lower[start..].find('>') else { break };
+        let Some(rel_open_end) = lower[start..].find('>') else {
+            break;
+        };
         let open_end = start + rel_open_end + 1;
-        let Some(rel_end) = lower[open_end..].find("</section>") else { break };
+        let Some(rel_end) = lower[open_end..].find("</section>") else {
+            break;
+        };
         let end = open_end + rel_end + "</section>".len();
         fragments.push(html[start..end].to_string());
         pos = end;
@@ -284,15 +446,32 @@ fn extract_section_fragments(html: &str) -> Vec<String> {
     fragments
 }
 
+fn is_meaningful_section_fragment(fragment: &str) -> bool {
+    let lower = fragment.to_lowercase();
+    let text = strip_html_tags(fragment).replace(char::is_whitespace, "");
+    text.chars().count() >= 8
+        || lower.contains("<img")
+        || lower.contains("<video")
+        || lower.contains("<canvas")
+        || lower.contains("<svg")
+        || lower.contains("<iframe")
+}
+
 fn extract_fragment_heading(fragment: &str) -> Option<String> {
     let lower = fragment.to_lowercase();
     for tag in ["h1", "h2", "h3"] {
         let open = format!("<{}", tag);
         let close = format!("</{}>", tag);
-        let Some(start) = lower.find(&open) else { continue };
-        let Some(rel_tag_end) = lower[start..].find('>') else { continue };
+        let Some(start) = lower.find(&open) else {
+            continue;
+        };
+        let Some(rel_tag_end) = lower[start..].find('>') else {
+            continue;
+        };
         let tag_end = rel_tag_end + start + 1;
-        let Some(rel_end) = lower[tag_end..].find(&close) else { continue };
+        let Some(rel_end) = lower[tag_end..].find(&close) else {
+            continue;
+        };
         let end = rel_end + tag_end;
         let heading = strip_html_tags(&fragment[tag_end..end]);
         if !heading.trim().is_empty() {
@@ -322,14 +501,28 @@ fn strip_html_tags(html: &str) -> String {
 fn sanitize_file_stem(input: &str) -> String {
     let mut stem: String = input
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
     stem.truncate(80);
-    if stem.trim_matches('_').is_empty() { "document".into() } else { stem }
+    if stem.trim_matches('_').is_empty() {
+        "document".into()
+    } else {
+        stem
+    }
 }
 
 #[tauri::command]
-pub async fn update_ai_config(state: State<'_, AppState>, api_key: String, model: Option<String>) -> CmdResult<()> {
+pub async fn update_ai_config(
+    state: State<'_, AppState>,
+    api_key: String,
+    model: Option<String>,
+) -> CmdResult<()> {
     let _orch = state.orchestrator.lock().await;
     let _ = (api_key, model);
     Ok(())
@@ -360,15 +553,20 @@ pub async fn agent_chat(
         // Build tools from registered agents
         let orch = state.orchestrator.lock().await;
         let agents = orch.list_agents().await;
-        let mut agent_caps: std::collections::HashMap<AgentId, Vec<seehtml_agents::AgentCapability>> = std::collections::HashMap::new();
+        let mut agent_caps: std::collections::HashMap<
+            AgentId,
+            Vec<seehtml_agents::AgentCapability>,
+        > = std::collections::HashMap::new();
         for a in &agents {
-            let caps: Vec<seehtml_agents::AgentCapability> = a.capabilities.iter().map(|c| {
-                seehtml_agents::AgentCapability {
+            let caps: Vec<seehtml_agents::AgentCapability> = a
+                .capabilities
+                .iter()
+                .map(|c| seehtml_agents::AgentCapability {
                     action: c.action.clone(),
                     description: c.description.clone(),
                     parameters: c.parameters.clone(),
-                }
-            }).collect();
+                })
+                .collect();
             agent_caps.insert(a.id.clone(), caps);
         }
         AgentLoop::build_tools(&agent_caps)
@@ -377,13 +575,16 @@ pub async fn agent_chat(
     let request = AgentLoopRequest {
         messages: msgs,
         tools: tool_defs,
-        system_prompt: system_prompt.or_else(|| Some(
-            "You are SeeHTML AI, a marketing page creation assistant. \
+        system_prompt: system_prompt.or_else(|| {
+            Some(
+                "You are SeeHTML AI, a marketing page creation assistant. \
              You can open HTML files, generate marketing page content, apply themes, \
              export to PPTX/Markdown/Video, process media, and OCR. \
              Use the available tools to help the user. \
-             Respond in Chinese if the user writes in Chinese.".into()
-        )),
+             Respond in Chinese if the user writes in Chinese."
+                    .into(),
+            )
+        }),
         max_iterations: max_iterations.unwrap_or(10),
     };
 
@@ -397,15 +598,18 @@ pub async fn get_tools(state: State<'_, AppState>) -> CmdResult<serde_json::Valu
     let orch = state.orchestrator.lock().await;
     let agents = orch.list_agents().await;
 
-    let mut agent_caps: std::collections::HashMap<AgentId, Vec<seehtml_agents::AgentCapability>> = std::collections::HashMap::new();
+    let mut agent_caps: std::collections::HashMap<AgentId, Vec<seehtml_agents::AgentCapability>> =
+        std::collections::HashMap::new();
     for a in &agents {
-        let caps: Vec<seehtml_agents::AgentCapability> = a.capabilities.iter().map(|c| {
-            seehtml_agents::AgentCapability {
+        let caps: Vec<seehtml_agents::AgentCapability> = a
+            .capabilities
+            .iter()
+            .map(|c| seehtml_agents::AgentCapability {
                 action: c.action.clone(),
                 description: c.description.clone(),
                 parameters: c.parameters.clone(),
-            }
-        }).collect();
+            })
+            .collect();
         agent_caps.insert(a.id.clone(), caps);
     }
 
@@ -415,7 +619,11 @@ pub async fn get_tools(state: State<'_, AppState>) -> CmdResult<serde_json::Valu
 
 /// Save captured PNG image to disk
 #[tauri::command]
-pub async fn save_image(_state: State<'_, AppState>, data_url: String, index: Option<u32>) -> CmdResult<String> {
+pub async fn save_image(
+    _state: State<'_, AppState>,
+    data_url: String,
+    index: Option<u32>,
+) -> CmdResult<String> {
     // Parse data URL: "data:image/png;base64,xxxxx"
     let b64 = if let Some(comma) = data_url.find(',') {
         data_url[comma + 1..].to_string()
@@ -431,9 +639,13 @@ pub async fn save_image(_state: State<'_, AppState>, data_url: String, index: Op
     let idx = index.unwrap_or(0);
     let path = std::path::PathBuf::from(format!("./output/slide_{}.png", idx));
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&path, &bytes)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
 }
 
@@ -446,19 +658,27 @@ fn resource_path(relative: &str) -> std::path::PathBuf {
 
     // Production: resources extracted next to exe
     let prod = exe_dir.join(relative);
-    if prod.exists() { return prod; }
+    if prod.exists() {
+        return prod;
+    }
 
     // Try _up from exe (Tauri v2 extracts resources)
     for up in 0..4 {
         let mut p = exe_dir.clone();
-        for _ in 0..up { p = p.join(".."); }
+        for _ in 0..up {
+            p = p.join("..");
+        }
         let candidate = p.join(relative);
-        if candidate.exists() { return candidate; }
+        if candidate.exists() {
+            return candidate;
+        }
     }
 
     // Dev fallback: project root
     let dev = std::path::PathBuf::from(relative);
-    if dev.exists() { return dev; }
+    if dev.exists() {
+        return dev;
+    }
 
     // Return prod path anyway (caller handles missing)
     prod
@@ -466,27 +686,45 @@ fn resource_path(relative: &str) -> std::path::PathBuf {
 
 /// Run OCR on an image using bundled Python
 #[tauri::command]
-pub async fn run_ocr(_state: State<'_, AppState>, image_path: String, engine: Option<String>) -> CmdResult<serde_json::Value> {
+pub async fn run_ocr(
+    _state: State<'_, AppState>,
+    image_path: String,
+    engine: Option<String>,
+) -> CmdResult<serde_json::Value> {
     let engine = engine.unwrap_or_else(|| "easyocr".into()); // Default easyocr = no Tesseract needed
     let python_exe = resource_path("python/python.exe");
     let python_script = resource_path("python/ocr_service.py");
 
-    let py_cmd = if python_exe.exists() { python_exe.to_string_lossy().to_string() } else { "python".into() };
-    let script = if python_script.exists() { python_script.to_string_lossy().to_string() } else { "./python/ocr_service.py".into() };
+    let py_cmd = if python_exe.exists() {
+        python_exe.to_string_lossy().to_string()
+    } else {
+        "python".into()
+    };
+    let script = if python_script.exists() {
+        python_script.to_string_lossy().to_string()
+    } else {
+        "./python/ocr_service.py".into()
+    };
 
     let output = tokio::process::Command::new(&py_cmd)
         .arg(&script)
         .arg(&image_path)
-        .arg("--engine").arg(&engine)
-        .arg("--lang").arg("chi_sim+eng")
-        .output().await
+        .arg("--engine")
+        .arg(&engine)
+        .arg("--lang")
+        .arg("chi_sim+eng")
+        .output()
+        .await
         .map_err(|e| format!("OCR failed - ensure Python is installed: {}", e))?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(serde_json::from_str(&stdout).unwrap_or(serde_json::json!({"text": stdout})))
     } else {
-        Err(format!("OCR error: {}", String::from_utf8_lossy(&output.stderr)))
+        Err(format!(
+            "OCR error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
@@ -505,7 +743,9 @@ pub async fn generate_video(
     let out = output_path.unwrap_or_else(|| "./output/presentation.mp4".into());
     let out_path = std::path::PathBuf::from(&out);
     if let Some(parent) = out_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     let ffmpeg_cmd = find_ffmpeg_command();
@@ -517,7 +757,11 @@ pub async fn generate_video(
     };
     let frame_count_arg = slide_count.to_string();
 
-    let status = tokio::process::Command::new(&ffmpeg_cmd)
+    let mut command = tokio::process::Command::new(&ffmpeg_cmd);
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
+
+    let status = command
         .args([
             "-y",
             "-framerate", &fps_arg,
@@ -525,7 +769,9 @@ pub async fn generate_video(
             "-i", "./output/slide_%d.png",
             "-frames:v", &frame_count_arg,
             "-c:v", "libx264",
-            "-r", "30",
+            "-preset", "medium",
+            "-crf", "18",
+            "-r", &fps_arg,
             "-pix_fmt", "yuv420p",
             "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
             &out,
@@ -533,8 +779,11 @@ pub async fn generate_video(
         .status().await
         .map_err(|e| format!("ffmpeg error: {}", e))?;
 
-    if status.success() { Ok(out) }
-    else { Err(format!("ffmpeg failed. Command: {}", ffmpeg_cmd)) }
+    if status.success() {
+        Ok(out)
+    } else {
+        Err(format!("ffmpeg failed. Command: {}", ffmpeg_cmd))
+    }
 }
 
 fn find_ffmpeg_command() -> String {
@@ -549,13 +798,21 @@ fn find_ffmpeg_command() -> String {
 
 /// Save document as HTML file
 #[tauri::command]
-pub async fn save_html(_state: State<'_, AppState>, html: String, path: Option<String>) -> CmdResult<String> {
+pub async fn save_html(
+    _state: State<'_, AppState>,
+    html: String,
+    path: Option<String>,
+) -> CmdResult<String> {
     let p = path.unwrap_or_else(|| "./output/document.html".into());
     let pb = std::path::PathBuf::from(&p);
     if let Some(parent) = pb.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    tokio::fs::write(&pb, &html).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&pb, &html)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(p)
 }
 
@@ -564,13 +821,18 @@ pub async fn save_html(_state: State<'_, AppState>, html: String, path: Option<S
 pub async fn get_memory(state: State<'_, AppState>, key: String) -> CmdResult<Option<String>> {
     let orch = state.orchestrator.lock().await;
     let cache = orch.results_cache.read().await;
-    Ok(cache.get(&key).and_then(|v| v.as_str().map(|s| s.to_string())))
+    Ok(cache
+        .get(&key)
+        .and_then(|v| v.as_str().map(|s| s.to_string())))
 }
 
 /// Set conversation memory
 #[tauri::command]
 pub async fn set_memory(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
     let orch = state.orchestrator.lock().await;
-    orch.results_cache.write().await.insert(key, serde_json::json!(value));
+    orch.results_cache
+        .write()
+        .await
+        .insert(key, serde_json::json!(value));
     Ok(())
 }

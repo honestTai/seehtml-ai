@@ -99,7 +99,9 @@ Motion HTML requirements:
 - Prefer Canvas for particle or physics-like motion.
 - Fill the viewport with the animation; keep controls minimal and non-obstructive.
 - Make the first frame visually meaningful immediately, before interaction.
-- If the user asks for MP4 later, design the animation as a clean loop suitable for recording.`;
+- If the user asks for MP4 later, design the animation as a clean loop suitable for recording.
+- Support deterministic export frames when possible: listen for the seehtml:export-frame event and render from event.detail.time or window.__SEEHTML_EXPORT_TIME__ so exported MP4 motion stays smooth and repeatable.
+- Keep a normal requestAnimationFrame preview path for live viewing, but make the render function accept a time value such as renderAtTime(seconds).`;
   }
 
   if (skill.id === 'html-refactor') {

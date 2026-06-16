@@ -27,7 +27,7 @@ export function EditorPanel() {
   }, []);
 
   return (
-    <section className='min-w-[460px] flex-[1.15] overflow-hidden bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:h-[520px] max-lg:flex-none'>
+    <section className='min-w-[520px] flex-[1.35] overflow-hidden bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:h-[520px] max-lg:flex-none'>
       <div className='flex h-full min-h-0 flex-col overflow-hidden'>
         <div className='flex h-12 flex-shrink-0 items-center gap-3 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4'>
           <div className='min-w-0 flex-1'>
@@ -83,6 +83,8 @@ function PreviewRenderer({
         currentSlide={currentSlide}
         onSlideChange={onSlideChange}
         onCapture={onCapture}
+        sourceUrl={doc.source === 'file' ? doc.url : undefined}
+        baseHref={doc.source === 'file' ? baseHref(doc.url) : undefined}
       />
     );
   }
@@ -142,6 +144,12 @@ function PreviewRenderer({
   }
 
   return <PreviewState icon='?' title={t('preview.unsupported')} />;
+}
+
+function baseHref(url?: string): string | undefined {
+  if (!url) return undefined;
+  const slash = url.lastIndexOf('/');
+  return slash === -1 ? undefined : url.slice(0, slash + 1);
 }
 
 function PreviewState({ icon, title, body }: { icon: string; title: string; body?: string }) {

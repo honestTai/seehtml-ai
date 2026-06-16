@@ -72,9 +72,9 @@ export const usePreviewStore = create<PreviewState>((set) => ({
       let doc: PreviewDocument;
 
       if (textPreviewKinds.has(kind)) {
-        const { invoke } = await import('@tauri-apps/api/core');
+        const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
         const content = await invoke<string>('read_text_file', { path });
-        doc = { name, path, kind, source: 'file', content };
+        doc = { name, path, kind, source: 'file', content, url: kind === 'html' ? convertFileSrc(path) : undefined };
       } else {
         const { convertFileSrc } = await import('@tauri-apps/api/core');
         doc = { name, path, kind, source: 'file', url: convertFileSrc(path) };

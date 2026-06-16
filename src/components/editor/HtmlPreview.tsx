@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { toPng } from 'html-to-image';
 import { useI18n } from '../../lib/i18n';
 import { splitHtmlPages } from '../../lib/htmlPages';
+import { usePreviewStore } from '../../stores/previewStore';
 
 interface Props {
   htmlContent: string;
@@ -9,20 +10,24 @@ interface Props {
   currentSlide: number;
   onSlideChange: (index: number) => void;
   onCapture: (dataUrl: string, index: number) => void;
+  sourceUrl?: string;
+  baseHref?: string;
 }
 
-export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange, onCapture }: Props) {
+export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange, onCapture, sourceUrl, baseHref }: Props) {
   const { t } = useI18n();
   const exportFrameRef = useRef<HTMLIFrameElement>(null);
+  const openPreviewFile = usePreviewStore((s) => s.openFile);
   const [capturing, setCapturing] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState('');
 
   const slides = sections && sections.length > 0
     ? sections.map((section) => ({ id: section.id, title: section.heading || section.id, html: section.content }))
-    : splitHtmlPages(htmlContent);
+    : splitHtmlPages(htmlContent, { baseHref });
   const safeSlide = Math.min(currentSlide, Math.max(slides.length - 1, 0));
   const currentContent = slides[safeSlide]?.html || htmlContent;
+  const useWholeProjectUrl = Boolean(sourceUrl && slides.length <= 1);
 
   useEffect(() => {
     if (currentSlide !== safeSlide) onSlideChange(safeSlide);
@@ -68,7 +73,7 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
   const exportAnimatedMp4 = async () => {
     if (exporting) return;
     const pages = slides.length > 0 ? slides : [{ id: 'page-1', title: 'Page 1', html: htmlContent }];
-    const fps = 12;
+    const fps = 30;
     const secondsPerPage = 4;
     const framesPerPage = fps * secondsPerPage;
     let frameIndex = 0;
@@ -82,11 +87,12 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
         await wait(350);
 
         for (let frame = 0; frame < framesPerPage; frame += 1) {
+          applyExportFrame(frame, fps, pageIndex, pages.length);
+          await wait(8);
           const dataUrl = await captureLoadedExportFrame();
           await invoke('save_image', { dataUrl, index: frameIndex });
           frameIndex += 1;
           setExportStatus(`${t('export.renderingPage')} ${pageIndex + 1}/${pages.length} · ${frame + 1}/${framesPerPage}`);
-          await wait(1000 / fps);
         }
       }
 
@@ -97,6 +103,7 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
         outputPath: null,
       });
       setExportStatus(`${t('chat.exported')} ${outputPath}`);
+      await openPreviewFile(outputPath, fileName(outputPath));
     } catch (e) {
       setExportStatus(e instanceof Error ? e.message : String(e));
     } finally {
@@ -152,6 +159,39 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
     });
   };
 
+  const applyExportFrame = (frame: number, fps: number, pageIndex: number, pageCount: number) => {
+    const time = frame / fps;
+    const doc = exportFrameRef.current?.contentDocument;
+    if (doc?.getAnimations) {
+      for (const animation of doc.getAnimations()) {
+        try {
+          animation.pause();
+          animation.currentTime = time * 1000;
+        } catch {
+          // Some browser-managed animations may reject manual seeking.
+        }
+      }
+    }
+
+    const win = exportFrameRef.current?.contentWindow as (Window & {
+      __SEEHTML_EXPORT_FRAME__?: number;
+      __SEEHTML_EXPORT_FPS__?: number;
+      __SEEHTML_EXPORT_TIME__?: number;
+      __SEEHTML_EXPORT_PAGE__?: number;
+      __SEEHTML_EXPORT_PAGE_COUNT__?: number;
+    }) | null;
+    if (!win) return;
+
+    win.__SEEHTML_EXPORT_FRAME__ = frame;
+    win.__SEEHTML_EXPORT_FPS__ = fps;
+    win.__SEEHTML_EXPORT_TIME__ = time;
+    win.__SEEHTML_EXPORT_PAGE__ = pageIndex;
+    win.__SEEHTML_EXPORT_PAGE_COUNT__ = pageCount;
+    win.dispatchEvent(new CustomEvent('seehtml:export-frame', {
+      detail: { frame, fps, time, pageIndex, pageCount },
+    }));
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col bg-white">
       <div className="flex flex-shrink-0 flex-wrap items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg-tertiary)] px-3 py-2">
@@ -189,7 +229,8 @@ export function HtmlPreview({ htmlContent, sections, currentSlide, onSlideChange
 
       <div className="min-h-0 flex-1 overflow-hidden bg-white">
         <iframe
-          srcDoc={currentContent}
+          src={useWholeProjectUrl ? sourceUrl : undefined}
+          srcDoc={useWholeProjectUrl ? undefined : currentContent}
           className="h-full w-full border-0"
           sandbox="allow-scripts allow-same-origin"
           title="HTML Preview"
@@ -250,4 +291,8 @@ function ToolButton({
 
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
 }
