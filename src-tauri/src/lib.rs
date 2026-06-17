@@ -9,6 +9,7 @@ use seehtml_agents::media::MediaAgent;
 use seehtml_agents::publish::PublishAgent;
 use seehtml_agents::style::StyleAgent;
 use seehtml_core::*;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing_subscriber;
@@ -39,7 +40,7 @@ fn agent_id_from_name(name: &str) -> Option<AgentId> {
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    let ai_config = AiConfig::default();
+    let ai_config = load_ai_config();
 
     let mut orchestrator = Orchestrator::new();
     // Register all agents
@@ -88,8 +89,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::open_html_file,
             commands::list_directory,
+            commands::create_project_directory,
             commands::find_project_entry,
             commands::read_text_file,
+            commands::read_binary_preview,
             commands::get_document_info,
             commands::list_agents,
             commands::execute_agent_action,
@@ -100,6 +103,7 @@ pub fn run() {
             commands::agent_chat,
             commands::get_tools,
             commands::save_image,
+            commands::clear_rendered_frames,
             commands::run_ocr,
             commands::generate_video,
             commands::save_html,
@@ -108,4 +112,77 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[derive(serde::Deserialize)]
+struct PartialAiConfig {
+    api_url: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+}
+
+fn load_ai_config() -> AiConfig {
+    let mut config = AiConfig::default();
+
+    if let Some(file_config) = read_ai_config_file() {
+        apply_partial_ai_config(&mut config, file_config);
+    }
+
+    if let Ok(api_url) = std::env::var("SEEHTML_AI_API_URL") {
+        if !api_url.trim().is_empty() {
+            config.api_url = api_url;
+        }
+    }
+    if let Ok(api_key) = std::env::var("SEEHTML_AI_API_KEY") {
+        if !api_key.trim().is_empty() {
+            config.api_key = api_key;
+        }
+    }
+    if let Ok(model) = std::env::var("SEEHTML_AI_MODEL") {
+        if !model.trim().is_empty() {
+            config.model = model;
+        }
+    }
+
+    config
+}
+
+fn read_ai_config_file() -> Option<PartialAiConfig> {
+    let path = ai_config_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn ai_config_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("SEEHTML_AI_CONFIG") {
+        if !path.trim().is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    std::env::var("APPDATA")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .map(|dir| dir.join("SeeHTML AI").join("ai-config.json"))
+}
+
+fn apply_partial_ai_config(config: &mut AiConfig, partial: PartialAiConfig) {
+    if let Some(api_url) = partial.api_url.filter(|value| !value.trim().is_empty()) {
+        config.api_url = api_url;
+    }
+    if let Some(api_key) = partial.api_key.filter(|value| !value.trim().is_empty()) {
+        config.api_key = api_key;
+    }
+    if let Some(model) = partial.model.filter(|value| !value.trim().is_empty()) {
+        config.model = model;
+    }
+    if let Some(temperature) = partial.temperature {
+        config.temperature = temperature;
+    }
+    if let Some(max_tokens) = partial.max_tokens {
+        config.max_tokens = max_tokens;
+    }
 }

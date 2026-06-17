@@ -3,7 +3,7 @@
 //! Architecture inspired by Claude Code / Codex agent patterns:
 //!   Orchestrator (🎯) → routes tasks, manages workflow
 //!   DocumentAgent (📄) → parses and structures HTML documents
-//!   ContentAgent (🤖) → AI-powered content generation (DeepSeek)
+//!   ContentAgent (🤖) → AI-powered content generation
 //!   StyleAgent (🎨) → theme, layout, and styling
 //!   MediaAgent (🎬) → video/audio/subtitle processing (FFmpeg)
 //!   ExportAgent (📦) → PPTX, Markdown, PNG export

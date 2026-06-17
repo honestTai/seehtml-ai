@@ -3364,6 +3364,7 @@ name = "seehtml-desktop"
 version = "2.0.0"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "seehtml-agents",
  "seehtml-core",
  "seehtml-export",

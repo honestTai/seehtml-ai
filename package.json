@@ -16,6 +16,7 @@
     "@tauri-apps/plugin-fs": "^2",
     "@tauri-apps/plugin-shell": "^2",
     "html-to-image": "^1.11.13",
+    "lucide-react": "^1.18.0",
     "react": "^19",
     "react-dom": "^19",
     "react-markdown": "^10",

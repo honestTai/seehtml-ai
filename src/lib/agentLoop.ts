@@ -41,6 +41,21 @@ export interface ToolDefinition {
 
 export interface AgentLoopResponse {
   messages: LlmMessage[];
+  plan?: AgentExecutionPlan;
+}
+
+export interface AgentExecutionPlan {
+  primary_intent: string;
+  task_focus: string;
+  steps: string[];
+  allowed_tools: string[];
+  needs_clarification: boolean;
+  clarification_question?: string | null;
+  clarification_options: string[];
+  wants_html_output: boolean;
+  wants_preview_update: boolean;
+  wants_video_export: boolean;
+  route_reason: string;
 }
 
 /**
@@ -59,6 +74,7 @@ export async function runAgentLoop(
   assistantContent: string;
   toolCalls: ToolCall[];
   messages: LlmMessage[];
+  plan?: AgentExecutionPlan;
 }> {
   const { invoke } = await import('@tauri-apps/api/core');
   const tools = await loadToolsForIntent(invoke, options?.toolNames);
@@ -86,8 +102,9 @@ export async function runAgentLoop(
     maxIterations: options?.maxIterations || 10,
   });
 
-  const response = result as AgentLoopResponse;
-  const responseMessages = response.messages || response as unknown as LlmMessage[];
+  const response = result as AgentLoopResponse | LlmMessage[];
+  const responseMessages = Array.isArray(response) ? response : response.messages || [];
+  const plan = Array.isArray(response) ? undefined : response.plan;
 
   // Extract the final assistant text response and any tool calls
   let assistantContent = '';
@@ -108,6 +125,7 @@ export async function runAgentLoop(
     assistantContent,
     toolCalls,
     messages: responseMessages,
+    plan,
   };
 }
 

@@ -15,7 +15,7 @@ const defaultAgents: AgentInfo[] = [
     { action: 'read_html_string', description: 'Parse HTML string' },
   ]},
   { id: 'Content', name: 'ContentAgent', emoji: '🤖', state: 'Idle', capabilities: [
-    { action: 'generate', description: 'Generate AI content via DeepSeek' },
+    { action: 'generate', description: 'Generate AI content via 4Router' },
     { action: 'enhance_html', description: 'Enhance content with AI' },
   ]},
   { id: 'Style', name: 'StyleAgent', emoji: '🎨', state: 'Idle', capabilities: [

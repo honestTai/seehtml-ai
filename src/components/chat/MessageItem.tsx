@@ -8,15 +8,15 @@ export function MessageItem({ message }: Props) {
   const images = message.imageDataUrls?.length ? message.imageDataUrls : message.imageDataUrl ? [message.imageDataUrl] : [];
 
   return (
-    <div className={`flex gap-3 ${isUser ? 'justify-end' : ''}`}>
+    <div className={`flex gap-2.5 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && (
-        <div className='flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-tertiary)] text-[11px] text-[var(--color-text-secondary)]'>
-          {message.agentEmoji || (isSystem ? '📋' : '🤖')}
+        <div className='flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[9px] font-semibold text-[var(--color-text-secondary)]'>
+          {isSystem ? 'SYS' : 'AI'}
         </div>
       )}
-      <div className={`max-w-[86%] px-3 py-2 text-sm leading-relaxed ${
+      <div className={`max-w-[86%] px-3 py-2 text-[13px] leading-6 ${
         isUser
-          ? 'rounded-2xl bg-[#f1eee9] text-[var(--color-text-primary)]'
+          ? 'rounded-[var(--radius-panel)] bg-[var(--color-bg-secondary)] text-[var(--color-text-primary)] shadow-sm'
         : isSystem
           ? 'text-[var(--color-text-secondary)]'
           : 'text-[var(--color-text-primary)]'
@@ -47,24 +47,24 @@ export function MessageItem({ message }: Props) {
 
 function ToolTrace({ events }: { events: AgentToolEvent[] }) {
   return (
-    <details className='mt-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]/70 px-2 py-1.5 text-[11px]'>
+    <details className='mt-2 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)]/70 px-2 py-1.5 text-[11px]'>
       <summary className='cursor-pointer select-none font-medium text-[var(--color-text-secondary)]'>
         工具轮 · {events.length}
       </summary>
       <div className='mt-2 space-y-2'>
         {events.map((event, index) => (
-          <div key={`${event.id}-${index}`} className='rounded-lg bg-[var(--color-bg-primary)] p-2'>
+          <div key={`${event.id}-${index}`} className='rounded-[var(--radius-control)] bg-[var(--color-bg-primary)] p-2'>
             <div className='flex items-center gap-2'>
               <span className={`h-2 w-2 rounded-full ${event.error ? 'bg-[var(--color-danger)]' : 'bg-[var(--color-success)]'}`} />
               <code className='font-mono text-[11px] text-[var(--color-accent)]'>{event.name}</code>
             </div>
             {event.arguments !== undefined && (
-              <div className='mt-1 rounded-lg bg-black/5 p-2 font-mono text-[10px] text-[var(--color-text-secondary)]'>
+              <div className='mt-1 rounded-[var(--radius-control)] bg-black/5 p-2 font-mono text-[10px] text-[var(--color-text-secondary)]'>
                 {formatValue(event.arguments, 360)}
               </div>
             )}
             {event.result !== undefined && (
-              <div className='mt-1 rounded-lg bg-black/5 p-2 text-[10px] text-[var(--color-text-secondary)]'>
+              <div className='mt-1 rounded-[var(--radius-control)] bg-black/5 p-2 text-[10px] text-[var(--color-text-secondary)]'>
                 {formatToolResult(event.result)}
               </div>
             )}
@@ -77,7 +77,7 @@ function ToolTrace({ events }: { events: AgentToolEvent[] }) {
 
 function WorkflowTrace({ steps }: { steps: WorkflowStep[] }) {
   return (
-    <details className='mt-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]/70 px-2 py-1.5 text-[11px]'>
+    <details className='mt-2 rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)]/70 px-2 py-1.5 text-[11px]'>
       <summary className='cursor-pointer select-none font-medium text-[var(--color-text-secondary)]'>
         Workflow · {steps.length}
       </summary>
@@ -85,7 +85,7 @@ function WorkflowTrace({ steps }: { steps: WorkflowStep[] }) {
         {steps.map((step) => {
           const failed = typeof step.status === 'object' && 'Failed' in step.status;
           return (
-            <div key={step.id} className='rounded-lg bg-[var(--color-bg-primary)] p-2'>
+            <div key={step.id} className='rounded-[var(--radius-control)] bg-[var(--color-bg-primary)] p-2'>
               <div className='flex items-center gap-2'>
                 <span className={`h-2 w-2 rounded-full ${failed ? 'bg-[var(--color-danger)]' : 'bg-[var(--color-success)]'}`} />
                 <code className='font-mono text-[11px] text-[var(--color-accent)]'>{step.agent}.{step.action}</code>

@@ -228,9 +228,9 @@ pub struct AiConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            api_url: "https://api.deepseek.com/chat/completions".into(),
-            api_key: "sk-f7f62c1431d34026afd0dee8fdad2a97".into(),
-            model: "deepseek-chat".into(), // DeepSeek latest model (V4 generation)
+            api_url: "https://4router.net/v1/chat/completions".into(),
+            api_key: String::new(),
+            model: "gpt-5.5".into(),
             temperature: 0.7,
             max_tokens: 8192,
         }
@@ -371,6 +371,47 @@ pub struct AgentLoopRequest {
     pub tools: Vec<ToolDefinition>,
     pub system_prompt: Option<String>,
     pub max_iterations: u32,
+}
+
+/// FlowMark-style plan produced before the executable agent loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentExecutionPlan {
+    pub primary_intent: String,
+    pub task_focus: String,
+    pub steps: Vec<String>,
+    pub allowed_tools: Vec<String>,
+    pub needs_clarification: bool,
+    pub clarification_question: Option<String>,
+    pub clarification_options: Vec<String>,
+    pub wants_html_output: bool,
+    pub wants_preview_update: bool,
+    pub wants_video_export: bool,
+    pub route_reason: String,
+}
+
+impl Default for AgentExecutionPlan {
+    fn default() -> Self {
+        Self {
+            primary_intent: "chat".into(),
+            task_focus: "Answer the user directly.".into(),
+            steps: vec!["Understand the request".into(), "Respond directly".into()],
+            allowed_tools: Vec::new(),
+            needs_clarification: false,
+            clarification_question: None,
+            clarification_options: Vec::new(),
+            wants_html_output: false,
+            wants_preview_update: false,
+            wants_video_export: false,
+            route_reason: "Normal conversation does not need tools.".into(),
+        }
+    }
+}
+
+/// Full response from the planned agent loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlannedAgentLoopResponse {
+    pub messages: Vec<LlmMessage>,
+    pub plan: AgentExecutionPlan,
 }
 
 /// Response from the agent loop (one step)

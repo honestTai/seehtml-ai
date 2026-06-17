@@ -10,7 +10,7 @@
 //! Uses a dispatch callback so the caller (Tauri commands) can inject the Orchestrator.
 
 use seehtml_core::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::info;
 use tokio::sync::mpsc;
@@ -54,6 +54,75 @@ impl AgentLoop {
             }
         }
         tools
+    }
+
+    /// FlowMark-style mode: plan first, then execute with a constrained tool set.
+    pub async fn chat_planned(
+        &self,
+        mut request: AgentLoopRequest,
+    ) -> Result<PlannedAgentLoopResponse> {
+        let plan = self.plan_request(&request).await?;
+
+        if plan.needs_clarification {
+            let messages = self.clarification_messages(request, &plan);
+            return Ok(PlannedAgentLoopResponse { messages, plan });
+        }
+
+        request.tools = planned_tools(&request.tools, &plan);
+        let base_prompt = request.system_prompt.take();
+        request.system_prompt = Some(system_prompt_with_plan(base_prompt, &plan));
+        let messages = self.chat(request).await?;
+        Ok(PlannedAgentLoopResponse { messages, plan })
+    }
+
+    async fn plan_request(&self, request: &AgentLoopRequest) -> Result<AgentExecutionPlan> {
+        let messages = vec![
+            LlmMessage {
+                role: "system".into(),
+                content: Some(planner_system_prompt()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+            LlmMessage {
+                role: "user".into(),
+                content: Some(planner_user_prompt(request)),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            },
+        ];
+
+        match self.call_llm(&messages, &[]).await? {
+            LlmResponse::Text(text) => parse_plan(&text, &request.tools),
+            LlmResponse::ToolCalls(_) => Err(SeeHtmlError::AiApiError(
+                "Agent planner tried to call tools instead of returning a plan.".into(),
+            )),
+        }
+    }
+
+    fn clarification_messages(
+        &self,
+        mut request: AgentLoopRequest,
+        plan: &AgentExecutionPlan,
+    ) -> Vec<LlmMessage> {
+        let base_prompt = request.system_prompt.take();
+        let mut full_messages = vec![LlmMessage {
+            role: "system".into(),
+            content: Some(system_prompt_with_plan(base_prompt, plan)),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }];
+        full_messages.append(&mut request.messages);
+        full_messages.push(LlmMessage {
+            role: "assistant".into(),
+            content: Some(clarification_text(plan)),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        });
+        full_messages
     }
 
     /// Batch mode: run agent loop, execute tools via dispatcher
@@ -207,12 +276,19 @@ impl AgentLoop {
         Ok(())
     }
 
-    /// Call LLM (DeepSeek/OpenAI compatible) with function calling
+    /// Call an OpenAI-compatible LLM with function calling.
     async fn call_llm(
         &self,
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
+        if self.config.api_key.trim().is_empty() {
+            return Err(SeeHtmlError::AiApiError(
+                "AI API key is not configured. Set SEEHTML_AI_API_KEY or create ai-config.json."
+                    .into(),
+            ));
+        }
+
         // Convert our LlmMessage → OpenAI message format
         let openai_msgs: Vec<serde_json::Value> = messages
             .iter()
@@ -405,6 +481,310 @@ fn parse_tool_name(full_name: &str) -> (String, String) {
     } else {
         (full_name.to_string(), "execute".to_string())
     }
+}
+
+fn planner_system_prompt() -> String {
+    r#"You are SeeHTML AI's server-side Agent planner.
+Return compact JSON only. Do not answer the user's task.
+The UI intent classifier and available tools are hints, not hard boundaries.
+
+Decide whether the user wants: clarification, normal chat, HTML creation/editing, local file work, export, publish/package, or media processing.
+Normal greetings, small talk, and product questions should use no tools.
+For HTML creation/editing, prefer direct final model output unless a registered tool exactly matches a required local action.
+Only select tools when required inputs are present. Never select export/media tools merely because they exist.
+Never select MP4/video/media work unless the user explicitly asks to render, export, generate, convert, or process video/media.
+If the request is vague, especially "make it better", "do a page", "adjust it", or unclear export/edit scope, set needsClarification=true and ask one concise question with 2-5 short options.
+
+JSON schema:
+{
+  "primaryIntent": "chat | clarify | create_html | edit_html | open_file | export | media | publish",
+  "taskFocus": "short execution focus",
+  "steps": ["2-5 short execution steps"],
+  "allowedTools": ["exact tool names from the available tool list, or empty array"],
+  "needsClarification": true,
+  "clarificationQuestion": "one short question, null when not needed",
+  "clarificationOptions": ["2-5 short options"],
+  "wantsHtmlOutput": false,
+  "wantsPreviewUpdate": false,
+  "wantsVideoExport": false,
+  "routeReason": "short user-facing reason"
+}"#
+    .into()
+}
+
+fn planner_user_prompt(request: &AgentLoopRequest) -> String {
+    let available_tools = if request.tools.is_empty() {
+        "No registered tools are available.".to_string()
+    } else {
+        request
+            .tools
+            .iter()
+            .map(|tool| format!("- {}: {}", tool.name, clip(&tool.description, 220)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let base_system = request
+        .system_prompt
+        .as_deref()
+        .map(|value| clip(value, 1400))
+        .unwrap_or_else(|| "No base system prompt supplied.".into());
+    let recent_messages = request
+        .messages
+        .iter()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|message| {
+            format!(
+                "{}: {}",
+                message.role,
+                clip(message.content.as_deref().unwrap_or(""), 1600)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let latest_user = request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .and_then(|message| message.content.as_deref())
+        .map(|value| clip(value, 5000))
+        .unwrap_or_default();
+
+    format!(
+        r#"Base system boundary:
+{base_system}
+
+Available tools:
+{available_tools}
+
+Recent conversation:
+{recent_messages}
+
+Latest user request:
+{latest_user}"#
+    )
+}
+
+fn parse_plan(content: &str, available_tools: &[ToolDefinition]) -> Result<AgentExecutionPlan> {
+    let json_text = extract_json_object(content).ok_or_else(|| {
+        SeeHtmlError::AiApiError("Agent planner returned an invalid plan.".into())
+    })?;
+    let root: serde_json::Value = serde_json::from_str(&json_text).map_err(|_| {
+        SeeHtmlError::AiApiError("Agent planner returned an invalid JSON plan.".into())
+    })?;
+
+    let available_names = available_tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect::<HashSet<_>>();
+    let allowed_tools = string_list(&root, &["allowedTools", "allowed_tools", "tools"])
+        .into_iter()
+        .filter(|name| available_names.contains(name.as_str()))
+        .collect::<Vec<_>>();
+    let needs_clarification = bool_field(
+        &root,
+        &["needsClarification", "needs_clarification"],
+        false,
+    );
+    let clarification_question = optional_text(
+        &root,
+        &["clarificationQuestion", "clarification_question", "question"],
+    );
+
+    let mut plan = AgentExecutionPlan {
+        primary_intent: text_field(
+            &root,
+            &["primaryIntent", "primary_intent", "intent"],
+            "chat",
+        ),
+        task_focus: text_field(
+            &root,
+            &["taskFocus", "task_focus", "focus"],
+            "Follow the user's request directly.",
+        ),
+        steps: string_list(&root, &["steps"]).into_iter().take(5).collect(),
+        allowed_tools,
+        needs_clarification,
+        clarification_question,
+        clarification_options: string_list(
+            &root,
+            &["clarificationOptions", "clarification_options", "options"],
+        )
+        .into_iter()
+        .take(5)
+        .collect(),
+        wants_html_output: bool_field(&root, &["wantsHtmlOutput", "wants_html_output"], false),
+        wants_preview_update: bool_field(
+            &root,
+            &["wantsPreviewUpdate", "wants_preview_update"],
+            false,
+        ),
+        wants_video_export: bool_field(
+            &root,
+            &["wantsVideoExport", "wants_video_export"],
+            false,
+        ),
+        route_reason: text_field(
+            &root,
+            &["routeReason", "route_reason", "reason"],
+            "Planned by SeeHTML Agent.",
+        ),
+    };
+
+    if plan.steps.is_empty() {
+        plan.steps = vec!["Understand the request".into(), "Execute the selected route".into()];
+    }
+    if plan.needs_clarification && plan.clarification_question.is_none() {
+        plan.clarification_question = Some("What should I do next?".into());
+    }
+    Ok(plan)
+}
+
+fn planned_tools(tools: &[ToolDefinition], plan: &AgentExecutionPlan) -> Vec<ToolDefinition> {
+    if plan.allowed_tools.is_empty() {
+        return Vec::new();
+    }
+    let allowed = plan
+        .allowed_tools
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    tools
+        .iter()
+        .filter(|tool| allowed.contains(tool.name.as_str()))
+        .cloned()
+        .collect()
+}
+
+fn system_prompt_with_plan(base: Option<String>, plan: &AgentExecutionPlan) -> String {
+    let base = base.unwrap_or_else(|| {
+        "You are SeeHTML AI. Respond in the same language as the user.".into()
+    });
+    format!(
+        r#"{base}
+
+Server planner:
+primaryIntent={primary_intent}
+taskFocus={task_focus}
+steps={steps}
+allowedTools={allowed_tools}
+needsClarification={needs_clarification}
+wantsHtmlOutput={wants_html_output}
+wantsPreviewUpdate={wants_preview_update}
+wantsVideoExport={wants_video_export}
+routeReason={route_reason}
+
+Planner boundary:
+- Treat the plan as guidance for this turn.
+- If allowedTools is empty, answer directly and do not pretend tools were used.
+- If the plan requests HTML output, return one complete previewable <!DOCTYPE html> document unless the user asked only for advice.
+- Do not create, render, or export MP4/video unless wantsVideoExport=true."#,
+        primary_intent = &plan.primary_intent,
+        task_focus = &plan.task_focus,
+        steps = plan.steps.join(" | "),
+        allowed_tools = if plan.allowed_tools.is_empty() {
+            "none".into()
+        } else {
+            plan.allowed_tools.join(", ")
+        },
+        needs_clarification = plan.needs_clarification,
+        wants_html_output = plan.wants_html_output,
+        wants_preview_update = plan.wants_preview_update,
+        wants_video_export = plan.wants_video_export,
+        route_reason = &plan.route_reason,
+    )
+}
+
+fn clarification_text(plan: &AgentExecutionPlan) -> String {
+    let question = plan
+        .clarification_question
+        .as_deref()
+        .unwrap_or("What should I do next?");
+    if plan.clarification_options.is_empty() {
+        return question.to_string();
+    }
+    let options = plan
+        .clarification_options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| format!("{}. {}", index + 1, option))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{question}\n{options}")
+}
+
+fn extract_json_object(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    let without_fence = if trimmed.starts_with("```") {
+        let first_newline = trimmed.find('\n')?;
+        let last_fence = trimmed.rfind("```")?;
+        if last_fence <= first_newline {
+            trimmed
+        } else {
+            trimmed[first_newline + 1..last_fence].trim()
+        }
+    } else {
+        trimmed
+    };
+    let start = without_fence.find('{')?;
+    let end = without_fence.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(without_fence[start..=end].to_string())
+}
+
+fn text_field(root: &serde_json::Value, keys: &[&str], fallback: &str) -> String {
+    optional_text(root, keys).unwrap_or_else(|| fallback.into())
+}
+
+fn optional_text(root: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = root.get(*key).and_then(|value| value.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn bool_field(root: &serde_json::Value, keys: &[&str], fallback: bool) -> bool {
+    for key in keys {
+        if let Some(value) = root.get(*key).and_then(|value| value.as_bool()) {
+            return value;
+        }
+    }
+    fallback
+}
+
+fn string_list(root: &serde_json::Value, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        if let Some(values) = root.get(*key).and_then(|value| value.as_array()) {
+            return values
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn clip(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_string();
+    }
+    let clipped = value.chars().take(limit).collect::<String>();
+    format!("{clipped}\n... [truncated]")
 }
 
 use crate::AgentCapability;

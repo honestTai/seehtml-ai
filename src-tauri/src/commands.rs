@@ -15,6 +15,14 @@ pub struct FileTreeNode {
     pub loaded: bool,
 }
 
+#[derive(serde::Serialize)]
+pub struct BinaryPreview {
+    pub name: String,
+    pub mime: String,
+    pub data_url: String,
+    pub size: u64,
+}
+
 fn should_skip_tree_entry(name: &str) -> bool {
     matches!(
         name,
@@ -99,12 +107,50 @@ async fn read_directory_node(path: PathBuf) -> CmdResult<FileTreeNode> {
 
 #[tauri::command]
 pub async fn list_directory(path: Option<String>) -> CmdResult<FileTreeNode> {
-    let root = if let Some(path) = path {
-        PathBuf::from(path)
-    } else {
-        std::env::current_dir().map_err(|e| e.to_string())?
+    let Some(path) = path else {
+        return Err("No project selected".into());
     };
-    read_directory_node(root).await
+    read_directory_node(PathBuf::from(path)).await
+}
+
+#[tauri::command]
+pub async fn create_project_directory(
+    parent_path: String,
+    name: Option<String>,
+) -> CmdResult<String> {
+    let parent = PathBuf::from(parent_path);
+    let metadata = tokio::fs::metadata(&parent)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !metadata.is_dir() {
+        return Err("Parent path is not a directory".into());
+    }
+
+    let base_name = name
+        .as_deref()
+        .map(sanitize_file_stem)
+        .filter(|value| !value.trim_matches('_').is_empty())
+        .unwrap_or_else(|| {
+            format!(
+                "seehtml-project-{}",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            )
+        });
+
+    let mut candidate = parent.join(&base_name);
+    let mut suffix = 2usize;
+    while tokio::fs::try_exists(&candidate)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        candidate = parent.join(format!("{}-{}", base_name, suffix));
+        suffix += 1;
+    }
+
+    tokio::fs::create_dir_all(&candidate)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(candidate.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -215,6 +261,51 @@ pub async fn read_text_file(path: String) -> CmdResult<String> {
     tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn read_binary_preview(path: String) -> CmdResult<BinaryPreview> {
+    let path = PathBuf::from(path);
+    let metadata = tokio::fs::metadata(&path)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("Path is not a file".into());
+    }
+    if metadata.len() > 40 * 1024 * 1024 {
+        return Err("File is too large for inline preview".into());
+    }
+
+    let mime = mime_for_preview(&path)
+        .ok_or_else(|| "This file type is not supported for inline preview".to_string())?;
+    let bytes = tokio::fs::read(&path).await.map_err(|e| e.to_string())?;
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    Ok(BinaryPreview {
+        name,
+        mime: mime.to_string(),
+        data_url: format!("data:{};base64,{}", mime, encoded),
+        size: metadata.len(),
+    })
+}
+
+fn mime_for_preview(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_lowercase();
+    match ext.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "bmp" => Some("image/bmp"),
+        "pdf" => Some("application/pdf"),
+        _ => None,
+    }
 }
 
 #[tauri::command]
@@ -519,13 +610,46 @@ fn sanitize_file_stem(input: &str) -> String {
 
 #[tauri::command]
 pub async fn update_ai_config(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     api_key: String,
     model: Option<String>,
 ) -> CmdResult<()> {
-    let _orch = state.orchestrator.lock().await;
-    let _ = (api_key, model);
-    Ok(())
+    let Some(config_path) = user_ai_config_path() else {
+        return Err("Cannot resolve user config directory".into());
+    };
+    if let Some(parent) = config_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let config = serde_json::json!({
+        "api_url": "https://4router.net/v1/chat/completions",
+        "api_key": api_key,
+        "model": model
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "gpt-5.5".into()),
+        "temperature": 0.7,
+        "max_tokens": 8192,
+    });
+    let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    tokio::fs::write(config_path, content)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn user_ai_config_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("SEEHTML_AI_CONFIG") {
+        if !path.trim().is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+
+    std::env::var("APPDATA")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .map(|dir| dir.join("SeeHTML AI").join("ai-config.json"))
 }
 
 #[tauri::command]
@@ -588,7 +712,10 @@ pub async fn agent_chat(
         max_iterations: max_iterations.unwrap_or(10),
     };
 
-    let result = agent_loop.chat(request).await.map_err(|e| e.to_string())?;
+    let result = agent_loop
+        .chat_planned(request)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
 }
 
@@ -623,6 +750,7 @@ pub async fn save_image(
     _state: State<'_, AppState>,
     data_url: String,
     index: Option<u32>,
+    output_dir: Option<String>,
 ) -> CmdResult<String> {
     // Parse data URL: "data:image/png;base64,xxxxx"
     let b64 = if let Some(comma) = data_url.find(',') {
@@ -637,7 +765,8 @@ pub async fn save_image(
         .map_err(|e| e.to_string())?;
 
     let idx = index.unwrap_or(0);
-    let path = std::path::PathBuf::from(format!("./output/slide_{}.png", idx));
+    let dir = output_dir.unwrap_or_else(|| "./output".into());
+    let path = std::path::PathBuf::from(dir).join(format!("slide_{}.png", idx));
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -647,6 +776,33 @@ pub async fn save_image(
         .await
         .map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn clear_rendered_frames(frames_dir: String) -> CmdResult<()> {
+    let dir = PathBuf::from(frames_dir);
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut entries = tokio::fs::read_dir(&dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
+        let path = entry.path();
+        let is_frame = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with("slide_") && name.ends_with(".png"))
+            .unwrap_or(false);
+        if is_frame {
+            tokio::fs::remove_file(path)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Resolve bundled resource path (production next to exe, dev from project root)
@@ -735,13 +891,14 @@ pub async fn generate_video(
     slide_count: u32,
     output_path: Option<String>,
     frame_rate: Option<f64>,
+    frames_dir: Option<String>,
 ) -> CmdResult<String> {
     if slide_count == 0 {
         return Err("No rendered frames found for MP4 export".into());
     }
 
     let out = output_path.unwrap_or_else(|| "./output/presentation.mp4".into());
-    let out_path = std::path::PathBuf::from(&out);
+    let out_path = absolute_path(&out);
     if let Some(parent) = out_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -749,40 +906,55 @@ pub async fn generate_video(
     }
 
     let ffmpeg_cmd = find_ffmpeg_command();
-    let fps = frame_rate.unwrap_or(1.0 / 3.0).clamp(0.1, 60.0);
-    let fps_arg = if (fps.fract()).abs() < f64::EPSILON {
-        format!("{}", fps as u32)
+    let input_fps = frame_rate.unwrap_or(1.0 / 3.0).clamp(0.1, 60.0);
+    let output_fps = if input_fps < 1.0 {
+        30.0
     } else {
-        format!("{:.3}", fps)
+        input_fps.round().clamp(1.0, 60.0)
     };
-    let frame_count_arg = slide_count.to_string();
+    let input_fps_arg = format_fps_arg(input_fps);
+    let output_fps_arg = format_fps_arg(output_fps);
+    let output_frame_count = ((slide_count as f64) * (output_fps / input_fps))
+        .ceil()
+        .max(1.0) as u64;
+    let frame_count_arg = output_frame_count.to_string();
+    let frame_root = frames_dir.unwrap_or_else(|| "./output".into());
+    let input_pattern = absolute_path(PathBuf::from(frame_root).join("slide_%d.png"));
+    let input_pattern_arg = input_pattern.to_string_lossy().to_string();
+    let out_arg = out_path.to_string_lossy().to_string();
 
     let mut command = tokio::process::Command::new(&ffmpeg_cmd);
     #[cfg(target_os = "windows")]
     command.creation_flags(0x08000000);
 
-    let status = command
+    let output = command
         .args([
             "-y",
-            "-framerate", &fps_arg,
+            "-framerate", &input_fps_arg,
             "-start_number", "0",
-            "-i", "./output/slide_%d.png",
+            "-i", &input_pattern_arg,
             "-frames:v", &frame_count_arg,
             "-c:v", "libx264",
             "-preset", "medium",
             "-crf", "18",
-            "-r", &fps_arg,
+            "-r", &output_fps_arg,
             "-pix_fmt", "yuv420p",
-            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
-            &out,
+            "-movflags", "+faststart",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease:flags=lanczos,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1,format=yuv420p",
+            &out_arg,
         ])
-        .status().await
+        .output().await
         .map_err(|e| format!("ffmpeg error: {}", e))?;
 
-    if status.success() {
-        Ok(out)
+    if output.status.success() {
+        Ok(out_arg)
     } else {
-        Err(format!("ffmpeg failed. Command: {}", ffmpeg_cmd))
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            Err(format!("ffmpeg failed. Command: {}", ffmpeg_cmd))
+        } else {
+            Err(format!("ffmpeg failed: {}", stderr))
+        }
     }
 }
 
@@ -794,6 +966,25 @@ fn find_ffmpeg_command() -> String {
         }
     }
     "ffmpeg".into()
+}
+
+fn absolute_path(path: impl AsRef<Path>) -> std::path::PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_default()
+            .join(path)
+    }
+}
+
+fn format_fps_arg(fps: f64) -> String {
+    if (fps.fract()).abs() < f64::EPSILON {
+        format!("{}", fps as u32)
+    } else {
+        format!("{:.3}", fps)
+    }
 }
 
 /// Save document as HTML file

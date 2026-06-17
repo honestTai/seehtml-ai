@@ -9,6 +9,7 @@ export interface PreviewDocument {
   source: PreviewSource;
   path?: string;
   url?: string;
+  mime?: string;
   content?: string;
 }
 
@@ -19,19 +20,29 @@ export interface PreviewRenderRequest {
   reason: string;
 }
 
+export interface PreviewRenderStatus {
+  state: 'queued' | 'running' | 'done' | 'error';
+  message: string;
+  outputPath?: string;
+  updatedAt: string;
+}
+
 interface PreviewState {
   document: PreviewDocument | null;
   renderRequest: PreviewRenderRequest | null;
+  renderStatus: PreviewRenderStatus | null;
   isLoading: boolean;
   error: string | null;
   openFile: (path: string, name?: string) => Promise<PreviewDocument | null>;
   setGeneratedHtml: (html: string, name?: string) => void;
   requestRender: (request: Omit<PreviewRenderRequest, 'id'>) => void;
   clearRenderRequest: (id?: string) => void;
+  setRenderStatus: (status: Omit<PreviewRenderStatus, 'updatedAt'> | null) => void;
   clear: () => void;
 }
 
 const textPreviewKinds = new Set<PreviewKind>(['html', 'markdown']);
+const inlineBinaryPreviewKinds = new Set<PreviewKind>(['image', 'pdf']);
 
 export const PREVIEWABLE_EXTENSIONS = [
   'html', 'htm', 'xhtml',
@@ -63,9 +74,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface BinaryPreviewPayload {
+  name: string;
+  mime: string;
+  data_url: string;
+  size: number;
+}
+
 export const usePreviewStore = create<PreviewState>((set) => ({
   document: null,
   renderRequest: null,
+  renderStatus: null,
   isLoading: false,
   error: null,
 
@@ -86,6 +105,10 @@ export const usePreviewStore = create<PreviewState>((set) => ({
         const { convertFileSrc, invoke } = await import('@tauri-apps/api/core');
         const content = await invoke<string>('read_text_file', { path });
         doc = { name, path, kind, source: 'file', content, url: kind === 'html' ? convertFileSrc(path) : undefined };
+      } else if (inlineBinaryPreviewKinds.has(kind)) {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const payload = await invoke<BinaryPreviewPayload>('read_binary_preview', { path });
+        doc = { name: payload.name || name, path, kind, source: 'file', url: payload.data_url, mime: payload.mime };
       } else {
         const { convertFileSrc } = await import('@tauri-apps/api/core');
         doc = { name, path, kind, source: 'file', url: convertFileSrc(path) };
@@ -109,7 +132,14 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   },
 
   requestRender: (request) => {
-    set({ renderRequest: { ...request, id: crypto.randomUUID() } });
+    set({
+      renderRequest: { ...request, id: crypto.randomUUID() },
+      renderStatus: {
+        state: 'queued',
+        message: 'MP4 已加入后台渲染队列',
+        updatedAt: new Date().toISOString(),
+      },
+    });
   },
 
   clearRenderRequest: (id) => {
@@ -119,5 +149,13 @@ export const usePreviewStore = create<PreviewState>((set) => ({
     });
   },
 
-  clear: () => set({ document: null, renderRequest: null, isLoading: false, error: null }),
+  setRenderStatus: (status) => {
+    set({
+      renderStatus: status
+        ? { ...status, updatedAt: new Date().toISOString() }
+        : null,
+    });
+  },
+
+  clear: () => set({ document: null, renderRequest: null, renderStatus: null, isLoading: false, error: null }),
 }));

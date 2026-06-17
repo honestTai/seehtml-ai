@@ -31,8 +31,10 @@ export default function App() {
     <div className="h-screen flex flex-col bg-[var(--color-bg-primary)]">
       <AppShell>
         {sidebarOpen && <Sidebar />}
-        <ChatPanel />
-        <EditorPanel />
+        <main className="flex min-w-0 flex-1 overflow-hidden max-lg:flex-col">
+          <ChatPanel />
+          <EditorPanel />
+        </main>
       </AppShell>
       <StatusBar />
       {commandPaletteOpen && <CommandPalette />}

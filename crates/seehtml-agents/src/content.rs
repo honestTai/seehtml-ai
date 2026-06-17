@@ -1,4 +1,4 @@
-//! ContentAgent - AI-powered content generation via DeepSeek API
+//! ContentAgent - AI-powered content generation via an OpenAI-compatible API
 use crate::{Agent, AgentCapability, AgentContext, CapabilityParameter};
 use async_trait::async_trait;
 use seehtml_core::*;
@@ -16,6 +16,13 @@ impl ContentAgent {
     }
 
     async fn call_ai(&self, prompt: &AiPrompt) -> Result<AiResponse> {
+        if self.config.api_key.trim().is_empty() {
+            return Err(SeeHtmlError::AiApiError(
+                "AI API key is not configured. Set SEEHTML_AI_API_KEY or create ai-config.json."
+                    .into(),
+            ));
+        }
+
         let body = serde_json::json!({
             "model": self.config.model,
             "messages": [

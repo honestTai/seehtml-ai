@@ -76,7 +76,7 @@ const skills: Skill[] = [
     id: 'video-make', name: 'Video Generator', emoji: '🎬',
     description: 'Convert page images into MP4 video using FFmpeg. Set duration and resolution.',
     tools: ['media.generate_video'],
-    naturalPrompt: 'Generate a video from the page images in ./output/',
+    naturalPrompt: 'Generate a video from the current project exports',
   },
   {
     id: 'package', name: 'Package & Publish', emoji: '🚀',
