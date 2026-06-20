@@ -6,6 +6,7 @@ import { usePreviewStore, type PreviewRenderStatus } from '../../stores/previewS
 import { useUIStore } from '../../stores/uiStore';
 import { MessageItem } from './MessageItem';
 import { ChatInput } from './ChatInput';
+import { ProcessingTimeline } from './ProcessingTimeline';
 import { useI18n, type Lang } from '../../lib/i18n';
 import type { ProcessingStep, QueuedRequest } from '../../types';
 
@@ -189,40 +190,9 @@ function formatRenderTime(value: string, lang: Lang): string {
 
 function ProcessingTrace({ steps, queue }: { steps: ProcessingStep[]; queue: QueuedRequest[] }) {
   const { t } = useI18n();
-  const showDetails = steps.length > 1;
   return (
-    <div className='rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3 text-xs text-[var(--color-text-primary)]'>
-      <div className={showDetails ? 'mb-2 flex items-center gap-2' : 'flex items-center gap-2'}>
-        <span className='flex h-5 w-5 items-center justify-center rounded-full bg-[var(--color-accent)]/15 text-[var(--color-accent)]'>
-          <span className='h-2 w-2 animate-pulse rounded-full bg-[var(--color-accent)]' />
-        </span>
-        <span className='font-semibold'>{t('chat.thinking')}</span>
-        <span className='ml-auto text-[10px] text-[var(--color-text-secondary)]'>{t('chat.processing')}</span>
-      </div>
-
-      {showDetails && (
-        <div className='space-y-1.5'>
-          {steps.map((step) => (
-            <div key={step.id} className='flex gap-2 rounded-[var(--radius-control)] bg-[var(--color-bg-secondary)] px-2.5 py-1.5'>
-              <span className={`mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full text-[9px] ${
-                step.status === 'done'
-                  ? 'bg-[var(--color-success)] text-white'
-                  : step.status === 'active'
-                  ? 'bg-[var(--color-accent)] text-white'
-                  : step.status === 'error'
-                  ? 'bg-[var(--color-danger)] text-white'
-                  : 'bg-[var(--color-border)] text-[var(--color-text-secondary)]'
-              }`}>
-                {step.status === 'done' ? '✓' : step.status === 'active' ? '•' : ''}
-              </span>
-              <div className='min-w-0 flex-1'>
-                <div className='font-medium'>{step.title}</div>
-                <div className='mt-0.5 line-clamp-2 text-[11px] leading-4 text-[var(--color-text-secondary)]'>{step.detail}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+    <div className='text-xs text-[var(--color-text-primary)]'>
+      <ProcessingTimeline steps={steps} running compact />
 
       {queue.length > 0 && (
         <div className='mt-2 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-2.5 py-2'>

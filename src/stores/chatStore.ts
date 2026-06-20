@@ -34,6 +34,7 @@ const STORAGE_KEY = 'seehtml-chat-history';
 const SESSION_STORAGE_KEY = 'seehtml-chat-sessions-v1';
 const MEMORY_KEY = 'seehtml-memory';
 const REQUEST_TIMEOUT_MS = 180_000;
+const LONG_TASK_NOTICE_MS = 120_000;
 const MAX_SESSION_MESSAGES = 200;
 const MAX_LOCAL_MEMORY_ITEMS = 80;
 const MAX_MEMORY_PAYLOAD_ITEMS = 40;
@@ -333,6 +334,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
     const requestId = crypto.randomUUID();
+    const startedAt = userMsg.timestamp;
     set({
       messages: [...state.messages, userMsg],
       inputValue: '',
@@ -349,6 +351,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'agent',
         content: formatClarificationContent(intent),
         timestamp: new Date().toISOString(),
+        startedAt,
+        completedAt: new Date().toISOString(),
+        processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
         clarification: buildClarificationPrompt(intent, displayContent),
         workflow: buildWorkflowForIntent(intent),
       };
@@ -389,6 +394,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
           role: 'agent',
           content: responseContent,
           timestamp: new Date().toISOString(),
+          startedAt,
+          completedAt: new Date().toISOString(),
+          processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
           clarification,
           workflow: buildWorkflowForIntent(intent),
         };
@@ -412,27 +420,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const prompt = images.length > 0
-        ? await withTimeout(buildImagePrompt(content, images, intent, projectPath), REQUEST_TIMEOUT_MS, t('chat.timeout'))
+        ? await buildImagePrompt(content, images, intent, projectPath)
         : buildPromptForIntent(content, currentHtml, intent, projectPath);
       const memoryPayload = await buildMemoryPayload(state.conversationMemory, content, projectPath);
 
-      const { assistantContent, messages, plan } = await withTimeout(
-        runAgentLoop(
-          prompt,
-          state.messages.filter((m) => m.role !== 'system' || m.id === 'welcome'),
-          {
-            systemPrompt: SYSTEM_PROMPT,
-            maxIterations: intent.maxIterations,
-            toolNames: intent.toolNames,
-            sessionId: state.activeSessionId,
-            projectDir: projectPath || null,
-            currentFile,
-            currentHtml,
-            memory: memoryPayload,
-          },
-        ),
-        REQUEST_TIMEOUT_MS,
-        t('chat.timeout'),
+      const { assistantContent, messages, plan } = await runAgentLoop(
+        prompt,
+        state.messages.filter((m) => m.role !== 'system' || m.id === 'welcome'),
+        {
+          systemPrompt: SYSTEM_PROMPT,
+          maxIterations: intent.maxIterations,
+          toolNames: intent.toolNames,
+          sessionId: state.activeSessionId,
+          projectDir: projectPath || null,
+          currentFile,
+          currentHtml,
+          memory: memoryPayload,
+        },
       );
 
       const html = extractHtmlFromAgentOutput(assistantContent, messages);
@@ -464,6 +468,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'agent',
         content: mp4Clarification ? `${assistantText}\n\n${formatMp4ProfileChoiceContent()}` : assistantText,
         timestamp: new Date().toISOString(),
+        startedAt,
+        completedAt: new Date().toISOString(),
+        processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
+        qualityChecks: htmlQuality,
         toolEvents,
         clarification: plan?.needs_clarification
           ? {
@@ -534,6 +542,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       timestamp: new Date().toISOString(),
     };
     const requestId = crypto.randomUUID();
+    const startedAt = userMsg.timestamp;
     set({
       messages: [...state.messages, userMsg],
       inputValue: '',
@@ -552,6 +561,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let savedHtmlPath: string | null = null;
       let workflowSteps: WorkflowStep[] | undefined;
       let clarification: ChatMessage['clarification'];
+      let qualityChecks: HtmlQualityCheck[] = [];
 
       if (parsed.cmd === 'open') {
         const path = await resolveOpenPath(parsed.rest, commandParams);
@@ -572,10 +582,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       } else if (parsed.cmd === 'ai' || parsed.cmd === 'generate') {
         const topic = normalizeAiTopic(parsed.rest, commandParams);
         const slides = inferSlideCount(parsed.rest, commandParams);
-        const result = await withTimeout(invoke('run_workflow', {
+        const result = await invoke('run_workflow', {
           command: 'ai',
           params: { topic, slides },
-        }), REQUEST_TIMEOUT_MS, t('chat.timeout'));
+        });
         nextHtml = extractHtmlFromWorkflowResult(result);
         workflowSteps = extractWorkflowSteps(result);
         responseContent = nextHtml
@@ -623,8 +633,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (nextHtml) {
         savedHtmlPath = await saveHtmlToProject(nextHtml, projectPath);
         if (commandHtmlSkill) {
+          qualityChecks = validateHtmlQuality(nextHtml, getLanguage(), commandHtmlSkill);
           responseContent = `${responseContent}\n${summarizeHtmlQuality(
-            validateHtmlQuality(nextHtml, getLanguage(), commandHtmlSkill),
+            qualityChecks,
             commandHtmlSkill,
             getLanguage(),
           )}`;
@@ -636,6 +647,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'agent',
         content: withSavedPath(responseContent, savedHtmlPath),
         timestamp: new Date().toISOString(),
+        startedAt,
+        completedAt: new Date().toISOString(),
+        processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
+        qualityChecks,
         clarification,
         workflow: workflowSteps,
       };
@@ -664,11 +679,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   stopProcessing: () => {
     const state = get();
     if (!state.isProcessing) return;
+    const now = new Date().toISOString();
     const stopMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'system',
       content: t('chat.cancelled'),
-      timestamp: new Date().toISOString(),
+      timestamp: now,
+      completedAt: now,
+      processingTrace: finalizeProcessingTrace(state.processingSteps, 'error', now),
     };
     set((s) => ({
       messages: [...s.messages, stopMsg],
@@ -1197,6 +1215,7 @@ function parseChineseCount(value: string): number | undefined {
 
 function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
   const zh = getLanguage() === 'zh';
+  const now = new Date().toISOString();
   if (!isOrchestrationIntent(intent)) {
     return [
       {
@@ -1204,6 +1223,7 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
         title: zh ? '思考中' : 'Thinking',
         detail: zh ? '正在理解你的消息。' : 'Understanding your message.',
         status: 'active',
+        startedAt: now,
       },
     ];
   }
@@ -1232,6 +1252,7 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
       title: zh ? 'LLM 理解问题' : 'LLM understands',
       detail: intent.summary,
       status: 'active',
+      startedAt: now,
     },
     {
       id: 'route',
@@ -1282,19 +1303,79 @@ function beginProcessingTimeline(
   requestId: string,
   intent: AgentIntent,
 ) {
-  const stepCount = createProcessingSteps(intent).length;
+  const stepCount = get().processingSteps.length || createProcessingSteps(intent).length;
   const delays = [320, 850, 1450, 2200];
   for (let index = 1; index < stepCount; index += 1) {
     window.setTimeout(() => {
       if (get().activeRequestId !== requestId) return;
+      const now = new Date().toISOString();
       set((s) => ({
         processingSteps: s.processingSteps.map((step, i) => ({
           ...step,
           status: i < index ? 'done' : i === index ? 'active' : 'pending',
+          startedAt: i === index ? step.startedAt || now : step.startedAt,
+          completedAt: i < index ? step.completedAt || now : step.completedAt,
         })),
       }));
     }, delays[index - 1] ?? 1200);
   }
+
+  window.setTimeout(() => {
+    if (get().activeRequestId !== requestId) return;
+    set((s) => ({
+      processingSteps: s.processingSteps.map((step) => {
+        if (step.status !== 'active') return step;
+        const longTaskNote = getLanguage() === 'zh'
+          ? '耗时较长，已进入长任务等待模式；不会因为前端计时器到点就自动中断。你可以继续等待、追加需求，或手动停止。'
+          : 'This is taking longer than usual. The run stays alive instead of being stopped by a frontend timer; you can keep waiting, append context, or stop it manually.';
+        if (step.detail.includes(longTaskNote)) return step;
+        return {
+          ...step,
+          detail: `${step.detail}\n${longTaskNote}`,
+        };
+      }),
+    }));
+  }, LONG_TASK_NOTICE_MS);
+}
+
+function finalizeProcessingTrace(
+  steps: ProcessingStep[],
+  status: Extract<ProcessingStep['status'], 'done' | 'error'>,
+  completedAt = new Date().toISOString(),
+): ProcessingStep[] {
+  if (steps.length === 0) return [];
+  const activeIndex = steps.findIndex((step) => step.status === 'active');
+  const firstPendingIndex = steps.findIndex((step) => step.status === 'pending');
+  const terminalIndex = activeIndex >= 0 ? activeIndex : firstPendingIndex >= 0 ? firstPendingIndex : steps.length - 1;
+
+  return steps.map((step, index) => {
+    if (status === 'error') {
+      if (index < terminalIndex || step.status === 'done') {
+        return {
+          ...step,
+          status: 'done',
+          startedAt: step.startedAt || completedAt,
+          completedAt: step.completedAt || completedAt,
+        };
+      }
+      if (index === terminalIndex) {
+        return {
+          ...step,
+          status: 'error',
+          startedAt: step.startedAt || completedAt,
+          completedAt,
+        };
+      }
+      return step;
+    }
+
+    return {
+      ...step,
+      status: 'done',
+      startedAt: step.startedAt || completedAt,
+      completedAt: step.completedAt || completedAt,
+    };
+  });
 }
 
 function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan): WorkflowStep[] | undefined {
@@ -1849,12 +1930,12 @@ function startBackgroundDocumentExport({
 
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const result = await withTimeout(invoke('export_document', {
+      const result = await invoke('export_document', {
         html,
         format,
         theme: null,
         outputPath,
-      }), REQUEST_TIMEOUT_MS, t('chat.timeout'));
+      });
       notifyProjectFilesChanged(projectPath);
       const exportedPath = extractPath(result) || outputPath;
       preview.setRenderStatus({
@@ -2232,11 +2313,14 @@ function appendError(
   requestId?: string,
 ) {
   const em = e instanceof Error ? e.message : String(e);
+  const now = new Date().toISOString();
   const errMsg: ChatMessage = {
     id: crypto.randomUUID(),
     role: 'system',
     content: `Error: ${em}`,
-    timestamp: new Date().toISOString(),
+    timestamp: now,
+    completedAt: now,
+    processingTrace: finalizeProcessingTrace(get().processingSteps, 'error', now),
   };
   let completed = false;
   set((s) => {

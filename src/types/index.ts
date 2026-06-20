@@ -43,6 +43,10 @@ export interface ChatMessage {
   timestamp: string;
   workflow?: WorkflowStep[];
   toolEvents?: AgentToolEvent[];
+  processingTrace?: ProcessingStep[];
+  qualityChecks?: QualityCheckResult[];
+  startedAt?: string;
+  completedAt?: string;
   clarification?: ClarificationPrompt;
 }
 
@@ -68,6 +72,14 @@ export interface ProcessingStep {
   title: string;
   detail: string;
   status: ProcessingStepStatus;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface QualityCheckResult {
+  id: string;
+  label: string;
+  passed: boolean;
 }
 
 export interface QueuedRequest {

@@ -1,6 +1,7 @@
 import { Bot, Check, Info, PencilLine, User } from 'lucide-react';
 import type { AgentToolEvent, ChatMessage, ClarificationOption, WorkflowStep } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
+import { ProcessingTimeline } from './ProcessingTimeline';
 
 interface Props { message: ChatMessage }
 
@@ -42,6 +43,12 @@ export function MessageItem({ message }: Props) {
               />
             ))}
           </div>
+        )}
+        {message.processingTrace && message.processingTrace.length > 0 && (
+          <ProcessingTimeline
+            steps={message.processingTrace}
+            qualityChecks={message.qualityChecks}
+          />
         )}
         {message.toolEvents && message.toolEvents.length > 0 && (
           <ToolTrace events={message.toolEvents} />
