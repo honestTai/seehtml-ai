@@ -4,9 +4,9 @@
 
 ![SeeHTML Motion cover](docs/assets/seehtml-motion-cover.jpg)
 
-Demo video: [docs/assets/seehtml-motion-promo.mp4](docs/assets/seehtml-motion-promo.mp4)
+![SeeHTML Motion preview](docs/assets/seehtml-motion-preview.gif)
 
-Marketing kit: [docs/MARKETING.md](docs/MARKETING.md)
+Demo video: [download / raw MP4](https://raw.githubusercontent.com/honestTai/seehtml-ai/main/docs/assets/seehtml-motion-promo.mp4)
 
 ---
 
