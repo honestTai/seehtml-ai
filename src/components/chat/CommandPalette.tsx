@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { Bot, Box, FilePlus2, FolderOpen, Palette, Video } from 'lucide-react';
+import { Bot, FilePlus2, FolderOpen, Settings, Video } from 'lucide-react';
 import { useUIStore } from '../../stores/uiStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useI18n } from '../../lib/i18n';
@@ -7,16 +7,16 @@ import type { LucideIcon } from 'lucide-react';
 
 const commands = [
   { id: 'open', label: 'Open HTML File', Icon: FolderOpen, desc: 'Open and parse an HTML page' },
-  { id: 'export', label: 'Export Page', Icon: FilePlus2, desc: 'Export to PPTX, Markdown, or PNG' },
-  { id: 'ai', label: 'AI Generate', Icon: Bot, desc: 'Generate page content with AI' },
-  { id: 'theme', label: 'Apply Theme', Icon: Palette, desc: 'Change page theme and style' },
-  { id: 'publish', label: 'Publish Package', Icon: Box, desc: 'Package page for sharing' },
-  { id: 'media', label: 'Process Media', Icon: Video, desc: 'Add video, audio, or subtitles' },
+  { id: 'ai', label: 'Generate HTML', Icon: Bot, desc: 'Generate or edit previewable HTML' },
+  { id: 'export-pptx', label: 'Export PPT', Icon: FilePlus2, desc: 'Export current HTML one page per slide' },
+  { id: 'export-video', label: 'Export MP4', Icon: Video, desc: 'Render current HTML animation to MP4' },
+  { id: 'model-settings', label: 'Model Settings', Icon: Settings, desc: 'Configure any OpenAI-compatible model' },
 ];
 
 export function CommandPalette() {
   const { t } = useI18n();
   const closeCommandPalette = useUIStore((s) => s.setCommandPaletteOpen);
+  const setModelSettingsOpen = useUIStore((s) => s.setModelSettingsOpen);
   const sendCommand = useChatStore((s) => s.sendCommand);
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -25,18 +25,16 @@ export function CommandPalette() {
   const localizedCommands = useMemo(() => commands.map((cmd) => ({
     ...cmd,
     label: cmd.id === 'open' ? t('sidebar.chooseFolder')
-      : cmd.id === 'export' ? t('editor.export')
       : cmd.id === 'ai' ? 'AI'
-      : cmd.id === 'theme' ? t('theme.light') + ' / ' + t('theme.dark')
-      : cmd.id === 'publish' ? t('command.publish')
-      : cmd.id === 'media' ? t('command.media')
+      : cmd.id === 'export-pptx' ? t('export.pptx')
+      : cmd.id === 'export-video' ? t('export.video')
+      : cmd.id === 'model-settings' ? t('settings.modelTitle')
       : cmd.label,
     desc: cmd.id === 'open' ? t('welcome.open')
-      : cmd.id === 'export' ? t('welcome.export')
       : cmd.id === 'ai' ? t('welcome.generate')
-      : cmd.id === 'theme' ? t('command.themeDesc')
-      : cmd.id === 'publish' ? t('command.publishDesc')
-      : cmd.id === 'media' ? t('command.mediaDesc')
+      : cmd.id === 'export-pptx' ? t('editor.exportPptx')
+      : cmd.id === 'export-video' ? t('editor.exportVideo')
+      : cmd.id === 'model-settings' ? t('settings.compatHint')
       : cmd.desc,
   })), [t]);
 
@@ -52,9 +50,17 @@ export function CommandPalette() {
   const closePalette = useCallback(() => closeCommandPalette(false), [closeCommandPalette]);
 
   const runCommand = useCallback((id: string) => {
-    void sendCommand(`/${id}`);
+    if (id === 'model-settings') {
+      setModelSettingsOpen(true);
+    } else if (id === 'export-pptx') {
+      void sendCommand('/export pptx', { display: t('export.pptx'), format: 'pptx' });
+    } else if (id === 'export-video') {
+      void sendCommand('/export video quality', { display: t('export.video'), format: 'video', profileId: 'quality' });
+    } else {
+      void sendCommand(`/${id}`);
+    }
     closePalette();
-  }, [closePalette, sendCommand]);
+  }, [closePalette, sendCommand, setModelSettingsOpen, t]);
 
   useEffect(() => {
     inputRef.current?.focus();

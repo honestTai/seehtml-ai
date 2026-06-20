@@ -29,16 +29,16 @@ export const HTML_SKILLS: HtmlSkill[] = [
     name: 'Motion HTML',
     labelZh: 'Motion HTML Skill',
     labelEn: 'Motion HTML Skill',
-    purposeZh: '用于粒子、动效、Canvas、可录制为视频的单页 HTML。',
-    purposeEn: 'For particles, motion, Canvas, and video-recordable HTML pages.',
+    purposeZh: '用于粒子、动效、赛博短视频、Canvas、可录制为视频的单页 HTML。',
+    purposeEn: 'For particles, cyber short-video motion, Canvas, and video-recordable HTML pages.',
   },
   {
     id: 'canvas-video',
     name: 'Canvas Video',
     labelZh: 'Canvas Video Skill',
     labelEn: 'Canvas Video Skill',
-    purposeZh: '用于 HTML5 Canvas 视频、长时间循环动画、片头、宣传短片和 MP4 导出。',
-    purposeEn: 'For HTML5 Canvas videos, long looping animations, intros, promo clips, and MP4 export.',
+    purposeZh: '用于 HTML5 Canvas 视频、粒子剧情、片头、宣传短片、小红书风格 MP4 导出。',
+    purposeEn: 'For HTML5 Canvas videos, particle stories, intros, promo shorts, Xiaohongshu-style MP4 export.',
   },
   {
     id: 'landing-html',
@@ -61,10 +61,10 @@ export const HTML_SKILLS: HtmlSkill[] = [
 export function selectHtmlSkill(input: string, mode: 'create' | 'edit' | 'image'): HtmlSkill {
   if (mode === 'edit') return skillById('html-refactor');
   const text = input.toLowerCase();
-  if (/(mp4|video|movie|render|record|export|promo|intro|outro|trailer|canvas video|视频|短片|宣传片|片头|片尾|录制|导出|渲染|一分钟|1\s*分钟|60\s*秒|60s)/i.test(text)) {
+  if (/(mp4|video|movie|render|record|export|promo|intro|outro|trailer|canvas video|shorts|reels|小红书|爆款|视频|短片|宣传片|剧情|片头|片尾|录制|导出|渲染|一分钟|1\s*分钟|60\s*秒|60s)/i.test(text)) {
     return skillById('canvas-video');
   }
-  if (/(particle|canvas|webgl|three|animation|animate|motion|video|mp4|动效|动画|粒子|星河|炫酷|自动动|转为mp4)/i.test(text)) {
+  if (/(particle|canvas|webgl|three|animation|animate|motion|video|mp4|cyber|neon|pixel|city|动效|动画|粒子|星河|炫酷|赛博|霓虹|像素|城市|镜头感|自动动|转为mp4)/i.test(text)) {
     return skillById('motion-html');
   }
   if (/(slide|slides|ppt|presentation|deck|演示|幻灯|汇报|课件|多页|分页|\d+\s*页)/i.test(input)) {
@@ -80,7 +80,12 @@ export function skillLabel(skill: HtmlSkill | undefined, lang: Lang): string {
 }
 
 export function buildHtmlSkillPrompt(skill: HtmlSkill, lang: Lang): string {
-  const shared = `Built-in HTML quality gate: ${skill.name}
+  const shared = `Built-in HTML quality thinking guide: ${skill.name}
+
+Important boundary:
+- This skill is an internal planning/checklist aid, not a product limitation.
+- The current user request, supplied assets, explicit style, page count, and export target always take priority.
+- Do not reject or reshape a valid user request just to fit this skill. If a skill note conflicts with the request, follow the request while keeping the HTML preview/export reliable.
 
 Output contract:
 - Return exactly one complete <!DOCTYPE html> document, not Markdown.
@@ -110,6 +115,8 @@ Motion HTML requirements:
 - Prefer Canvas for particle or physics-like motion.
 - Fill the viewport with the animation; keep controls minimal and non-obstructive.
 - Make the first frame visually meaningful immediately, before interaction.
+- For open-ended particle/story requests with no stronger user direction, consider a short-video visual language: cyber/neon palette, pixel-city or abstract-tech environment, light streaks, parallax camera moves, kinetic title cards, and a clear hook-to-payoff beat.
+- Use bold, readable headline typography with glow/shadow sparingly; the text should feel like a social video title, not a static webpage.
 - If the user asks for MP4 later, design the animation as a clean loop suitable for recording.
 - Support deterministic export frames when possible: listen for the seehtml:export-frame event and render from event.detail.time or window.__SEEHTML_EXPORT_TIME__ so exported MP4 motion stays smooth and repeatable.
 - Keep a normal requestAnimationFrame preview path for live viewing, but make the render function accept a time value such as renderAtTime(seconds).`;
@@ -121,12 +128,14 @@ Motion HTML requirements:
 Canvas Video requirements:
 - Build one self-contained HTML5 Canvas animation with inline JavaScript; avoid external media, CDN scripts, and image dependencies unless the user supplied assets.
 - Use a stable 16:9 stage designed for 1920x1080 export, then scale it responsively to fit the iframe preview without changing the logical coordinate system.
+- When the brief is open-ended and no other genre is specified, a good default is a Xiaohongshu-friendly motion short: 8-15 second cinematic pacing, cyber-neon or particle-tech look, pixel/retro-future city accents, quick hook text, camera push/pan, particle bursts, and a resolved end-card.
 - Define an explicit duration using window.__SEEHTML_EXPORT_DURATION__ and a DURATION constant. If the user gave a duration, honor it exactly within the app export limit.
 - Make motion deterministic and frame-seekable: implement renderAtTime(seconds), assign window.renderAtTime = renderAtTime, and render the full frame from absolute time rather than accumulated deltas.
 - Listen for window event "seehtml:export-frame" and render from event.detail.time; also read window.__SEEHTML_EXPORT_TIME__ when present.
 - Use requestAnimationFrame only for live preview timing. Exported frames must not depend on wall-clock time, random drift, network loading, or hidden async state.
 - Use seeded randomness or precomputed particles so frame N is reproducible every time. Do not mutate particle state in a way that makes seeking backward incorrect.
 - Structure longer videos as a small timeline of scenes/beats with easing helpers, camera movement, text beats, and a clean loop or intentional ending.
+- For story-like requests, use a 3-beat structure: setup visual world, escalation/transformation, title payoff/end card. Do not leave the video as only a background effect.
 - The first frame must look deliberate, not blank; the final frame should either loop cleanly to the first frame or resolve to a stable end card.
 - Keep per-frame work predictable: reuse arrays, avoid layout reads in the render loop, cap particle counts, and draw only what is visible.
 - Include a minimal overlay label only when useful; it must not cover the primary animation or export-critical content.

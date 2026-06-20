@@ -2,7 +2,6 @@ import type React from 'react';
 import { Command, Files, MessageSquare, PanelLeft, Settings, Sparkles } from 'lucide-react';
 import { useUIStore } from '../../stores/uiStore';
 import { useI18n } from '../../lib/i18n';
-import { getTheme, setTheme, type ThemeMode } from '../../lib/theme';
 
 export function ActivityRail() {
   const { t } = useI18n();
@@ -11,10 +10,7 @@ export function ActivityRail() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette);
   const setWorkspaceMode = useUIStore((s) => s.setWorkspaceMode);
-  const cycleTheme = () => {
-    const next: Record<ThemeMode, ThemeMode> = { light: 'dark', dark: 'auto', auto: 'light' };
-    setTheme(next[getTheme()]);
-  };
+  const openModelSettings = useUIStore((s) => s.setModelSettingsOpen);
   const showFiles = () => {
     setWorkspaceMode('files');
     if (!sidebarOpen) toggleSidebar();
@@ -31,7 +27,7 @@ export function ActivityRail() {
       <RailButton label='AI' onClick={toggleCommandPalette}><Sparkles size={18} /></RailButton>
       <div className='mt-auto flex flex-col gap-1'>
         <RailButton label='Ctrl+K' onClick={toggleCommandPalette}><Command size={17} /></RailButton>
-        <RailButton label={t('theme.auto')} onClick={cycleTheme}><Settings size={17} /></RailButton>
+        <RailButton label={t('settings.modelTitle')} onClick={() => openModelSettings(true)}><Settings size={17} /></RailButton>
       </div>
     </nav>
   );

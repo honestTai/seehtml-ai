@@ -18,7 +18,7 @@ export function StatusBar() {
   return (
     <div className='flex h-7 flex-shrink-0 items-center gap-3 overflow-hidden border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 text-[11px] text-[var(--color-text-secondary)]'>
       <span className='font-medium text-[var(--color-text-primary)]'>SeeHTML AI</span>
-      <span>4Router gpt-5.5</span>
+      <span>{t('settings.customModel')}</span>
       <span className='h-3 w-px bg-[var(--color-border)]' />
       <span className='inline-flex items-center gap-1.5'>
         <span className={`h-1.5 w-1.5 rounded-full ${isProcessing ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'}`} />

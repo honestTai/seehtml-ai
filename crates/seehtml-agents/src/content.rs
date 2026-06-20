@@ -15,42 +15,68 @@ impl ContentAgent {
         Self { state: AgentState::Idle, config, client: reqwest::Client::new() }
     }
 
-    async fn call_ai(&self, prompt: &AiPrompt) -> Result<AiResponse> {
-        if self.config.api_key.trim().is_empty() {
+    async fn call_ai(&self, prompt: &AiPrompt, config: &AiConfig) -> Result<AiResponse> {
+        let api_url = config.api_url.trim();
+        let model = config.model.trim();
+        let api_key = config.api_key.trim();
+
+        if api_url.is_empty() || model.is_empty() {
             return Err(SeeHtmlError::AiApiError(
-                "AI API key is not configured. Set SEEHTML_AI_API_KEY or create ai-config.json."
+                "LLM provider is not configured. Open Model Settings and set API URL and model."
+                    .into(),
+            ));
+        }
+
+        if config.use_auth_header && api_key.is_empty() {
+            return Err(SeeHtmlError::AiApiError(
+                "LLM API key is not configured. Open Model Settings and set an API key, or disable Authorization header for a local provider."
                     .into(),
             ));
         }
 
         let body = serde_json::json!({
-            "model": self.config.model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": prompt.system_prompt},
                 {"role": "user", "content": format!("{}
 
 Context: {}", prompt.user_prompt, prompt.context.as_deref().unwrap_or(""))}
             ],
-            "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens,
         });
 
-        let resp = self.client.post(&self.config.api_url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+        let mut request = self.client.post(api_url)
             .header("Content-Type", "application/json")
-            .json(&body)
+            .json(&body);
+        if config.use_auth_header && !api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let resp = request
             .send()
             .await
             .map_err(|e| SeeHtmlError::AiApiError(e.to_string()))?;
 
-        let json: serde_json::Value = resp.json().await
+        let status = resp.status();
+        let body_text = resp.text().await
             .map_err(|e| SeeHtmlError::AiApiError(e.to_string()))?;
+        if !status.is_success() {
+            return Err(SeeHtmlError::AiApiError(format!(
+                "LLM API returned {}: {}",
+                status,
+                body_text
+            )));
+        }
+
+        let json: serde_json::Value = serde_json::from_str(&body_text)
+            .map_err(|e| SeeHtmlError::AiApiError(format!("Invalid LLM JSON: {}", e)))?;
 
         let content = json["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or("")
             .to_string();
-        let model = json["model"].as_str().unwrap_or(&self.config.model).to_string();
+        let model = json["model"].as_str().unwrap_or(model).to_string();
         let usage = json.get("usage").map(|u| AiUsage {
             prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0) as u32,
             completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0) as u32,
@@ -60,11 +86,12 @@ Context: {}", prompt.user_prompt, prompt.context.as_deref().unwrap_or(""))}
         Ok(AiResponse { content, usage, model })
     }
 
-    async fn generate_slide_content(&self, topic: &str, num_slides: u32) -> Result<Vec<String>> {
+    async fn generate_slide_content(&self, topic: &str, num_slides: u32, config: &AiConfig) -> Result<Vec<String>> {
         let prompt = AiPrompt {
             system_prompt: r#"You are SeeHTML Frontend Slides Skill.
 Create polished, production-quality, directly previewable HTML decks.
 Return HTML only. Do not use Markdown fences.
+This skill is an internal planning/checklist aid, not a limitation. The user's explicit request always wins over skill defaults.
 Quality gate:
 - Build a complete visual story with strong hierarchy, not plain bullet dumps.
 - Include responsive CSS, viewport-safe slide sizing, polished spacing, and readable contrast.
@@ -105,7 +132,7 @@ Output format:
 </body>
 </html>"#.into()),
         };
-        let resp = self.call_ai(&prompt).await?;
+        let resp = self.call_ai(&prompt, config).await?;
         let trimmed = resp.content.trim();
         if trimmed.to_lowercase().contains("<!doctype html") || trimmed.to_lowercase().contains("<html") {
             return Ok(vec![trimmed.to_string()]);
@@ -127,7 +154,7 @@ Output format:
         }
     }
 
-    async fn enhance_html_content(&self, html: &str, instructions: &str) -> Result<String> {
+    async fn enhance_html_content(&self, html: &str, instructions: &str, config: &AiConfig) -> Result<String> {
         let prompt = AiPrompt {
             system_prompt: "You are an HTML content enhancer. Improve the given HTML content while preserving its structure.".into(),
             user_prompt: format!("Enhance this HTML content. Instructions: {}
@@ -135,7 +162,7 @@ Output format:
 HTML:{}", instructions, html),
             context: None,
         };
-        let resp = self.call_ai(&prompt).await?;
+        let resp = self.call_ai(&prompt, config).await?;
         Ok(resp.content)
     }
 }
@@ -152,23 +179,24 @@ impl Agent for ContentAgent {
     }
 
     async fn execute(&self, action: &str, params: serde_json::Value, ctx: &AgentContext) -> Result<serde_json::Value> {
+        let config = ctx.config.as_ref().unwrap_or(&self.config);
         match action {
             "generate" => {
                 let topic = params.get("topic").and_then(|v| v.as_str()).unwrap_or("Presentation");
                 let slides = params.get("slides").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
-                let content = self.generate_slide_content(topic, slides).await?;
+                let content = self.generate_slide_content(topic, slides, config).await?;
                 Ok(serde_json::json!({"slides": content}))
             }
             "enhance_for_export" => {
                 let html = ctx.document.as_ref().map(|d| d.html_content.as_str()).unwrap_or("");
                 let instructions = params.get("instructions").and_then(|v| v.as_str()).unwrap_or("Improve readability and formatting");
-                let enhanced = self.enhance_html_content(html, instructions).await?;
+                let enhanced = self.enhance_html_content(html, instructions, config).await?;
                 Ok(serde_json::json!({"enhanced_html": enhanced}))
             }
             "enhance_html" => {
                 let html = params.get("html").and_then(|v| v.as_str()).unwrap_or("");
                 let instructions = params.get("instructions").and_then(|v| v.as_str()).unwrap_or("Improve content");
-                let enhanced = self.enhance_html_content(html, instructions).await?;
+                let enhanced = self.enhance_html_content(html, instructions, config).await?;
                 Ok(serde_json::json!({"enhanced_html": enhanced}))
             }
             _ => Err(SeeHtmlError::AgentError { agent: "ContentAgent".into(), message: format!("Unknown action: {}", action) }),

@@ -1,7 +1,9 @@
 use crate::AppState;
+use rusqlite::{Connection, OptionalExtension, params};
 use seehtml_agents::{Agent, AgentContext, AgentLoop};
 use seehtml_core::*;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use tauri::State;
 
 type CmdResult<T> = std::result::Result<T, String>;
@@ -23,10 +25,20 @@ pub struct BinaryPreview {
     pub size: u64,
 }
 
+#[derive(serde::Serialize)]
+pub struct MemoryRecord {
+    pub key: String,
+    pub value: String,
+    pub kind: String,
+    pub source: Option<String>,
+    pub updated_at: String,
+}
+
 fn should_skip_tree_entry(name: &str) -> bool {
     matches!(
         name,
         ".git"
+            | ".seehtml"
             | ".idea"
             | ".vscode"
             | "node_modules"
@@ -313,8 +325,8 @@ pub async fn open_html_file(
     state: State<'_, AppState>,
     path: String,
 ) -> CmdResult<serde_json::Value> {
+    let ctx = agent_context_with_config(&state).await;
     let orch = state.orchestrator.lock().await;
-    let ctx = AgentContext::default();
     let params = serde_json::json!({"path": path});
     let req = UserRequest {
         id: uuid::Uuid::new_v4().to_string(),
@@ -360,8 +372,8 @@ pub async fn execute_agent_action(
     action: String,
     params: serde_json::Value,
 ) -> CmdResult<serde_json::Value> {
+    let ctx = agent_context_with_config(&state).await;
     let orch = state.orchestrator.lock().await;
-    let ctx = AgentContext::default();
     let workflow = orch
         .plan(&UserRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -384,8 +396,8 @@ pub async fn run_workflow(
     command: String,
     params: serde_json::Value,
 ) -> CmdResult<serde_json::Value> {
+    let ctx = agent_context_with_config(&state).await;
     let orch = state.orchestrator.lock().await;
-    let ctx = AgentContext::default();
     let req = UserRequest {
         id: uuid::Uuid::new_v4().to_string(),
         command,
@@ -398,6 +410,12 @@ pub async fn run_workflow(
         .await
         .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(results).map_err(|e| e.to_string())?)
+}
+
+async fn agent_context_with_config(state: &State<'_, AppState>) -> AgentContext {
+    let mut ctx = AgentContext::default();
+    ctx.config = Some(state.ai_config.lock().await.clone());
+    ctx
 }
 
 #[tauri::command]
@@ -610,10 +628,26 @@ fn sanitize_file_stem(input: &str) -> String {
 
 #[tauri::command]
 pub async fn update_ai_config(
-    _state: State<'_, AppState>,
+    state: State<'_, AppState>,
+    provider: Option<String>,
+    api_url: String,
     api_key: String,
-    model: Option<String>,
-) -> CmdResult<()> {
+    model: String,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    use_auth_header: Option<bool>,
+    supports_vision: Option<bool>,
+    use_default_ocr: Option<bool>,
+) -> CmdResult<serde_json::Value> {
+    let api_url = api_url.trim().to_string();
+    let model = model.trim().to_string();
+    if api_url.is_empty() {
+        return Err("API URL is required".into());
+    }
+    if model.is_empty() {
+        return Err("Model is required".into());
+    }
+
     let Some(config_path) = user_ai_config_path() else {
         return Err("Cannot resolve user config directory".into());
     };
@@ -623,19 +657,48 @@ pub async fn update_ai_config(
             .map_err(|e| e.to_string())?;
     }
 
-    let config = serde_json::json!({
-        "api_url": "https://4router.net/v1/chat/completions",
-        "api_key": api_key,
-        "model": model
+    let config = AiConfig {
+        provider: provider
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "gpt-5.5".into()),
-        "temperature": 0.7,
-        "max_tokens": 8192,
-    });
+            .unwrap_or_else(|| "custom".into()),
+        api_url,
+        api_key,
+        model,
+        temperature: temperature.unwrap_or(0.7).clamp(0.0, 2.0),
+        max_tokens: max_tokens.unwrap_or(8192).clamp(1, 262_144),
+        use_auth_header: use_auth_header.unwrap_or(true),
+        supports_vision: supports_vision.unwrap_or(false),
+        use_default_ocr: use_default_ocr.unwrap_or(true),
+    };
     let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    tokio::fs::write(config_path, content)
+    tokio::fs::write(&config_path, content)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    {
+        let mut runtime_config = state.ai_config.lock().await;
+        *runtime_config = config.clone();
+    }
+    {
+        let mut agent_loop = state.agent_loop.lock().await;
+        agent_loop.config = config.clone();
+    }
+
+    Ok(serde_json::json!({
+        "config": config,
+        "config_path": config_path.to_string_lossy(),
+        "configured": true,
+    }))
+}
+
+#[tauri::command]
+pub async fn get_ai_config(state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+    let config = state.ai_config.lock().await.clone();
+    Ok(serde_json::json!({
+        "config": config,
+        "config_path": user_ai_config_path().map(|path| path.to_string_lossy().to_string()),
+        "configured": !config.api_url.trim().is_empty() && !config.model.trim().is_empty(),
+    }))
 }
 
 fn user_ai_config_path() -> Option<PathBuf> {
@@ -673,7 +736,6 @@ pub async fn agent_chat(
     current_html: Option<String>,
     memory: Option<serde_json::Value>,
 ) -> CmdResult<serde_json::Value> {
-    let agent_loop = &state.agent_loop;
     let msgs: Vec<LlmMessage> = serde_json::from_value(messages).map_err(|e| e.to_string())?;
     let runtime_context =
         build_agent_runtime_context(session_id, project_dir, current_file, current_html, memory);
@@ -702,16 +764,20 @@ pub async fn agent_chat(
         }
         AgentLoop::build_tools(&agent_caps)
     };
+    let tool_defs = filter_core_agent_tools(tool_defs);
 
     let request = AgentLoopRequest {
         messages: msgs,
         tools: tool_defs,
         system_prompt: system_prompt.or_else(|| {
             Some(
-                "You are SeeHTML AI, a marketing page creation assistant. \
-             You can open HTML files, generate marketing page content, apply themes, \
-             export to PPTX/Markdown/Video, process media, and OCR. \
-             Use the available tools to help the user. \
+                "You are SeeHTML AI, an open-source HTML creation agent. \
+             Core capabilities are: generate or edit complete previewable HTML, \
+             export the current HTML to PPTX when explicitly requested, and prepare \
+             MP4-ready HTML when the user explicitly asks for video export. \
+             MP4 rendering is handled by the app preview pipeline, not by an LLM tool. \
+             Do not claim to run OCR, publishing, theme, Markdown, or media-processing tools. \
+             Use tools only when they are necessary and available. \
              Respond in Chinese if the user writes in Chinese."
                     .into(),
             )
@@ -720,6 +786,7 @@ pub async fn agent_chat(
         runtime_context,
     };
 
+    let agent_loop = state.agent_loop.lock().await;
     let result = agent_loop
         .chat_planned(request)
         .await
@@ -801,7 +868,7 @@ fn memory_snippets_from_value(memory: Option<serde_json::Value>) -> Vec<MemorySn
             Some(MemorySnippet {
                 key,
                 value,
-                source: Some("client-localStorage".into()),
+                source: Some("project-sqlite".into()),
             })
         })
         .take(40)
@@ -830,7 +897,22 @@ pub async fn get_tools(state: State<'_, AppState>) -> CmdResult<serde_json::Valu
     }
 
     let tools = AgentLoop::build_tools(&agent_caps);
+    let tools = filter_core_agent_tools(tools);
     Ok(serde_json::to_value(tools).map_err(|e| e.to_string())?)
+}
+
+fn filter_core_agent_tools(tools: Vec<ToolDefinition>) -> Vec<ToolDefinition> {
+    tools
+        .into_iter()
+        .filter(|tool| is_core_agent_tool(&tool.name))
+        .collect()
+}
+
+fn is_core_agent_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "content_generate" | "content_enhance_html" | "export_export_pptx"
+    )
 }
 
 /// Save captured PNG image to disk
@@ -874,9 +956,7 @@ pub async fn clear_rendered_frames(frames_dir: String) -> CmdResult<()> {
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut entries = tokio::fs::read_dir(&dir)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut entries = tokio::fs::read_dir(&dir).await.map_err(|e| e.to_string())?;
     while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
         let path = entry.path();
         let is_frame = path
@@ -1062,9 +1142,7 @@ fn absolute_path(path: impl AsRef<Path>) -> std::path::PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(path)
+        std::env::current_dir().unwrap_or_default().join(path)
     }
 }
 
@@ -1096,23 +1174,361 @@ pub async fn save_html(
     Ok(p)
 }
 
-/// Get conversation memory (simple key-value store)
+fn project_memory_db_path(project_path: &str) -> CmdResult<PathBuf> {
+    let trimmed = project_path.trim();
+    if trimmed.is_empty() {
+        return Err("Project path is required for memory".into());
+    }
+    Ok(PathBuf::from(trimmed)
+        .join(".seehtml")
+        .join("memory.sqlite3"))
+}
+
+fn init_memory_db(conn: &Connection) -> CmdResult<()> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS memories (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_memories_updated_at ON memories(updated_at);
+
+        CREATE TABLE IF NOT EXISTS context_index (
+            path TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            snippet TEXT NOT NULL,
+            hash TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_context_updated_at ON context_index(updated_at);
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn with_project_memory_db<T, F>(project_path: String, f: F) -> CmdResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Connection) -> CmdResult<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let db_path = project_memory_db_path(&project_path)?;
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+        init_memory_db(&conn)?;
+        f(&conn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn memory_cache_key(project_path: &str, key: &str) -> String {
+    format!("{}::{}", project_path.trim(), key.trim())
+}
+
+fn clamp_memory_limit(limit: Option<u32>, default_limit: u32) -> i64 {
+    i64::from(limit.unwrap_or(default_limit).clamp(1, 200))
+}
+
+fn map_memory_row(
+    row: &rusqlite::Row<'_>,
+    kind: &str,
+    source_index: Option<usize>,
+) -> rusqlite::Result<MemoryRecord> {
+    Ok(MemoryRecord {
+        key: row.get(0)?,
+        value: row.get(1)?,
+        kind: kind.to_string(),
+        source: match source_index {
+            Some(index) => row.get(index)?,
+            None => None,
+        },
+        updated_at: row.get(2)?,
+    })
+}
+
+/// Get project-scoped memory from .seehtml/memory.sqlite3.
 #[tauri::command]
-pub async fn get_memory(state: State<'_, AppState>, key: String) -> CmdResult<Option<String>> {
+pub async fn get_memory(
+    state: State<'_, AppState>,
+    project_path: String,
+    key: String,
+) -> CmdResult<Option<String>> {
+    let db_value = with_project_memory_db(project_path.clone(), {
+        let key = key.clone();
+        move |conn| {
+            conn.query_row(
+                "SELECT value FROM memories WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())
+        }
+    })
+    .await?;
+
+    if db_value.is_some() {
+        return Ok(db_value);
+    }
+
     let orch = state.orchestrator.lock().await;
     let cache = orch.results_cache.read().await;
+    let namespaced_key = memory_cache_key(&project_path, &key);
     Ok(cache
-        .get(&key)
+        .get(&namespaced_key)
+        .or_else(|| cache.get(&key))
         .and_then(|v| v.as_str().map(|s| s.to_string())))
 }
 
-/// Set conversation memory
+/// Set project-scoped memory.
 #[tauri::command]
-pub async fn set_memory(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
+pub async fn set_memory(
+    state: State<'_, AppState>,
+    project_path: String,
+    key: String,
+    value: String,
+) -> CmdResult<()> {
+    let updated_at = chrono::Utc::now().to_rfc3339();
+    with_project_memory_db(project_path.clone(), {
+        let key = key.clone();
+        let value = value.clone();
+        let updated_at = updated_at.clone();
+        move |conn| {
+            conn.execute(
+                r#"
+                INSERT INTO memories (key, value, updated_at)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                "#,
+                params![key, value, updated_at],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+    })
+    .await?;
+
     let orch = state.orchestrator.lock().await;
-    orch.results_cache
-        .write()
-        .await
-        .insert(key, serde_json::json!(value));
+    orch.results_cache.write().await.insert(
+        memory_cache_key(&project_path, &key),
+        serde_json::json!(value),
+    );
     Ok(())
+}
+
+#[tauri::command]
+pub async fn list_memory(project_path: String, limit: Option<u32>) -> CmdResult<Vec<MemoryRecord>> {
+    let limit = clamp_memory_limit(limit, 80);
+    with_project_memory_db(project_path, move |conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value, updated_at FROM memories ORDER BY updated_at DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| map_memory_row(row, "memory", None))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn search_memory(
+    project_path: String,
+    query: String,
+    limit: Option<u32>,
+) -> CmdResult<Vec<MemoryRecord>> {
+    let limit = clamp_memory_limit(limit, 40);
+    with_project_memory_db(project_path, move |conn| {
+        let trimmed = query.trim();
+        if trimmed.is_empty() {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key, value, updated_at FROM memories ORDER BY updated_at DESC LIMIT ?1",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![limit], |row| map_memory_row(row, "memory", None))
+                .map_err(|e| e.to_string())?;
+            return rows
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string());
+        }
+
+        let pattern = format!("%{}%", trimmed);
+        let memory_limit = (limit / 2).max(1);
+        let context_limit = (limit - memory_limit).max(1);
+        let mut output = Vec::new();
+
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT key, value, updated_at FROM memories
+                     WHERE key LIKE ?1 OR value LIKE ?1
+                     ORDER BY updated_at DESC LIMIT ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![&pattern, memory_limit], |row| {
+                    map_memory_row(row, "memory", None)
+                })
+                .map_err(|e| e.to_string())?;
+            output.extend(
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT path, snippet, updated_at, path FROM context_index
+                     WHERE path LIKE ?1 OR title LIKE ?1 OR snippet LIKE ?1
+                     ORDER BY updated_at DESC LIMIT ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![&pattern, context_limit], |row| {
+                    map_memory_row(row, "context", Some(3))
+                })
+                .map_err(|e| e.to_string())?;
+            output.extend(
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(|e| e.to_string())?,
+            );
+        }
+
+        Ok(output)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn refresh_context_index(
+    project_path: String,
+    limit: Option<u32>,
+) -> CmdResult<serde_json::Value> {
+    let limit = usize::try_from(limit.unwrap_or(120).clamp(1, 500)).unwrap_or(120);
+    let project_path_for_db = project_path.clone();
+    with_project_memory_db(project_path_for_db, move |conn| {
+        let root = PathBuf::from(project_path.trim());
+        if !root.is_dir() {
+            return Err("Project path is not a directory".into());
+        }
+
+        let mut files = Vec::new();
+        collect_context_files(&root, &mut files, limit);
+        conn.execute("DELETE FROM context_index", [])
+            .map_err(|e| e.to_string())?;
+
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let mut indexed = 0usize;
+        for file in files {
+            let Ok(text) = std::fs::read_to_string(&file) else {
+                continue;
+            };
+            let relative = file
+                .strip_prefix(&root)
+                .unwrap_or(&file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let title = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("document")
+                .to_string();
+            let snippet = compact_text(&text, 6000);
+            let hash = file_hash_marker(&file);
+            conn.execute(
+                r#"
+                INSERT INTO context_index (path, title, snippet, hash, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                ON CONFLICT(path) DO UPDATE SET
+                    title = excluded.title,
+                    snippet = excluded.snippet,
+                    hash = excluded.hash,
+                    updated_at = excluded.updated_at
+                "#,
+                params![relative, title, snippet, hash, updated_at],
+            )
+            .map_err(|e| e.to_string())?;
+            indexed += 1;
+        }
+
+        Ok(serde_json::json!({
+            "indexed": indexed,
+            "database": project_memory_db_path(project_path.trim())?.to_string_lossy(),
+        }))
+    })
+    .await
+}
+
+fn collect_context_files(root: &Path, output: &mut Vec<PathBuf>, limit: usize) {
+    if output.len() >= limit {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if output.len() >= limit {
+            return;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if should_skip_tree_entry(&name) || name == "exports" {
+                continue;
+            }
+            collect_context_files(&path, output, limit);
+        } else if context_file_allowed(&path, metadata.len()) {
+            output.push(path);
+        }
+    }
+}
+
+fn context_file_allowed(path: &Path, size: u64) -> bool {
+    if size == 0 || size > 1_000_000 {
+        return false;
+    }
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("html" | "htm" | "md" | "txt" | "css" | "js" | "ts" | "tsx" | "jsx" | "json")
+    )
+}
+
+fn compact_text(text: &str, max_chars: usize) -> String {
+    let mut compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() > max_chars {
+        compact = compact.chars().take(max_chars).collect::<String>();
+    }
+    compact
+}
+
+fn file_hash_marker(path: &Path) -> String {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return "unknown".into();
+    };
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    format!("{}:{}", metadata.len(), modified)
 }

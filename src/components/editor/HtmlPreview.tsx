@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, FileDown, FileText, ImageDown, Video } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileDown, ImageDown, Video } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { useI18n } from '../../lib/i18n';
 import { splitHtmlPages } from '../../lib/htmlPages';
@@ -376,7 +376,6 @@ export function HtmlPreview({
         )}
         <ToolButton icon={<ImageDown size={14} />} onClick={handleCapture} disabled={capturing || Boolean(exporting)} label={capturing ? t('export.rendering') : t('export.png')} shortLabel="PNG" />
         <ToolButton icon={<FileDown size={14} />} onClick={() => exportDocument('pptx')} disabled={Boolean(exporting)} label={exporting === 'pptx' ? t('export.exporting') : t('export.pptx')} shortLabel="PPT" />
-        <ToolButton icon={<FileText size={14} />} onClick={() => exportDocument('markdown')} disabled={Boolean(exporting)} label={exporting === 'markdown' ? t('export.exporting') : t('export.markdown')} shortLabel="MD" />
         <Mp4ProfileSelector
           value={selectedMp4ProfileId}
           disabled={Boolean(exporting)}

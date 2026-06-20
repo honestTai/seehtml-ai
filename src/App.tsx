@@ -6,6 +6,8 @@ import { EditorPanel } from './components/editor/EditorPanel';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { StatusBar } from './components/layout/StatusBar';
 import { CommandPalette } from './components/chat/CommandPalette';
+import { ModelSettingsDialog } from './components/settings/ModelSettingsDialog';
+import { useChatStore } from './stores/chatStore';
 import { useUIStore } from './stores/uiStore';
 
 export default function App() {
@@ -13,6 +15,8 @@ export default function App() {
   const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen);
 
   useEffect(() => {
+    void useChatStore.getState().hydrateMemory();
+
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
       if ((e.metaKey || e.ctrlKey) && key === "k") {
@@ -43,6 +47,7 @@ export default function App() {
       </AppShell>
       <StatusBar />
       {commandPaletteOpen && <CommandPalette />}
+      <ModelSettingsDialog />
     </div>
   );
 }

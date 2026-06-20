@@ -5,9 +5,6 @@ use seehtml_agents::agent_loop::ToolDispatcher;
 use seehtml_agents::content::ContentAgent;
 use seehtml_agents::document::DocumentAgent;
 use seehtml_agents::export_agent::ExportAgent;
-use seehtml_agents::media::MediaAgent;
-use seehtml_agents::publish::PublishAgent;
-use seehtml_agents::style::StyleAgent;
 use seehtml_core::*;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -19,8 +16,8 @@ pub mod commands;
 /// Application state shared across all Tauri commands
 pub struct AppState {
     pub orchestrator: Arc<Mutex<Orchestrator>>,
-    pub agent_loop: Arc<AgentLoop>,
-    pub ai_config: AiConfig,
+    pub agent_loop: Arc<Mutex<AgentLoop>>,
+    pub ai_config: Arc<Mutex<AiConfig>>,
 }
 
 /// Map agent short name → AgentId for dispatch
@@ -41,19 +38,18 @@ pub fn run() {
     tracing_subscriber::fmt::init();
 
     let ai_config = load_ai_config();
+    let ai_config_state = Arc::new(Mutex::new(ai_config.clone()));
 
     let mut orchestrator = Orchestrator::new();
-    // Register all agents
+    // Open-source core: file parsing, HTML generation, and PPT export.
+    // MP4 rendering is handled by the preview pipeline + FFmpeg command.
     orchestrator.register(Arc::new(DocumentAgent::new()));
     orchestrator.register(Arc::new(ContentAgent::new(ai_config.clone())));
-    orchestrator.register(Arc::new(StyleAgent::new()));
-    orchestrator.register(Arc::new(MediaAgent::new(None)));
     orchestrator.register(Arc::new(ExportAgent::new()));
-    orchestrator.register(Arc::new(PublishAgent::new()));
 
     let orchestrator = Arc::new(Mutex::new(orchestrator));
     let orch_for_dispatcher = orchestrator.clone();
-    let ai_config_for_dispatcher = ai_config.clone();
+    let ai_config_for_dispatcher = ai_config_state.clone();
 
     // Create dispatcher that connects AgentLoop to Orchestrator
     // When LLM calls a tool, this dispatcher executes it via the real agents
@@ -63,11 +59,12 @@ pub fn run() {
               params: serde_json::Value,
               runtime_context: AgentRuntimeContext| {
             let orch = orch_for_dispatcher.clone();
-            let ai_config = ai_config_for_dispatcher.clone();
+            let ai_config_state = ai_config_for_dispatcher.clone();
             let agent_name = agent_name.to_string();
             let action = action.to_string();
             Box::pin(async move {
                 let orch = orch.lock().await;
+                let ai_config = ai_config_state.lock().await.clone();
                 let agent_id =
                     agent_id_from_name(&agent_name).ok_or_else(|| SeeHtmlError::AgentError {
                         agent: agent_name.clone(),
@@ -80,7 +77,9 @@ pub fn run() {
         },
     );
 
-    let agent_loop = Arc::new(AgentLoop::new(ai_config.clone()).with_dispatcher(dispatcher));
+    let agent_loop = Arc::new(Mutex::new(
+        AgentLoop::new(ai_config.clone()).with_dispatcher(dispatcher),
+    ));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -90,7 +89,7 @@ pub fn run() {
         .manage(AppState {
             orchestrator: orchestrator.clone(),
             agent_loop: agent_loop.clone(),
-            ai_config,
+            ai_config: ai_config_state,
         })
         .invoke_handler(tauri::generate_handler![
             commands::open_html_file,
@@ -104,6 +103,7 @@ pub fn run() {
             commands::execute_agent_action,
             commands::run_workflow,
             commands::export_document,
+            commands::get_ai_config,
             commands::update_ai_config,
             commands::get_agent_status,
             commands::agent_chat,
@@ -115,6 +115,9 @@ pub fn run() {
             commands::save_html,
             commands::get_memory,
             commands::set_memory,
+            commands::list_memory,
+            commands::search_memory,
+            commands::refresh_context_index,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -122,11 +125,15 @@ pub fn run() {
 
 #[derive(serde::Deserialize)]
 struct PartialAiConfig {
+    provider: Option<String>,
     api_url: Option<String>,
     api_key: Option<String>,
     model: Option<String>,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
+    use_auth_header: Option<bool>,
+    supports_vision: Option<bool>,
+    use_default_ocr: Option<bool>,
 }
 
 fn load_ai_config() -> AiConfig {
@@ -141,6 +148,11 @@ fn load_ai_config() -> AiConfig {
             config.api_url = api_url;
         }
     }
+    if let Ok(provider) = std::env::var("SEEHTML_AI_PROVIDER") {
+        if !provider.trim().is_empty() {
+            config.provider = provider;
+        }
+    }
     if let Ok(api_key) = std::env::var("SEEHTML_AI_API_KEY") {
         if !api_key.trim().is_empty() {
             config.api_key = api_key;
@@ -149,6 +161,21 @@ fn load_ai_config() -> AiConfig {
     if let Ok(model) = std::env::var("SEEHTML_AI_MODEL") {
         if !model.trim().is_empty() {
             config.model = model;
+        }
+    }
+    if let Ok(use_auth_header) = std::env::var("SEEHTML_AI_USE_AUTH_HEADER") {
+        if let Ok(value) = use_auth_header.parse::<bool>() {
+            config.use_auth_header = value;
+        }
+    }
+    if let Ok(supports_vision) = std::env::var("SEEHTML_AI_SUPPORTS_VISION") {
+        if let Ok(value) = supports_vision.parse::<bool>() {
+            config.supports_vision = value;
+        }
+    }
+    if let Ok(use_default_ocr) = std::env::var("SEEHTML_AI_USE_DEFAULT_OCR") {
+        if let Ok(value) = use_default_ocr.parse::<bool>() {
+            config.use_default_ocr = value;
         }
     }
 
@@ -176,6 +203,9 @@ fn ai_config_path() -> Option<PathBuf> {
 }
 
 fn apply_partial_ai_config(config: &mut AiConfig, partial: PartialAiConfig) {
+    if let Some(provider) = partial.provider.filter(|value| !value.trim().is_empty()) {
+        config.provider = provider;
+    }
     if let Some(api_url) = partial.api_url.filter(|value| !value.trim().is_empty()) {
         config.api_url = api_url;
     }
@@ -190,5 +220,14 @@ fn apply_partial_ai_config(config: &mut AiConfig, partial: PartialAiConfig) {
     }
     if let Some(max_tokens) = partial.max_tokens {
         config.max_tokens = max_tokens;
+    }
+    if let Some(use_auth_header) = partial.use_auth_header {
+        config.use_auth_header = use_auth_header;
+    }
+    if let Some(supports_vision) = partial.supports_vision {
+        config.supports_vision = supports_vision;
+    }
+    if let Some(use_default_ocr) = partial.use_default_ocr {
+        config.use_default_ocr = use_default_ocr;
     }
 }

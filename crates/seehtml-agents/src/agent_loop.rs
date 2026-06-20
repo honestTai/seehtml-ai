@@ -290,9 +290,20 @@ impl AgentLoop {
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
     ) -> Result<LlmResponse> {
-        if self.config.api_key.trim().is_empty() {
+        let api_url = self.config.api_url.trim();
+        let model = self.config.model.trim();
+        let api_key = self.config.api_key.trim();
+
+        if api_url.is_empty() || model.is_empty() {
             return Err(SeeHtmlError::AiApiError(
-                "AI API key is not configured. Set SEEHTML_AI_API_KEY or create ai-config.json."
+                "LLM provider is not configured. Open Model Settings and set API URL and model."
+                    .into(),
+            ));
+        }
+
+        if self.config.use_auth_header && api_key.is_empty() {
+            return Err(SeeHtmlError::AiApiError(
+                "LLM API key is not configured. Open Model Settings and set an API key, or disable Authorization header for a local provider."
                     .into(),
             ));
         }
@@ -341,7 +352,7 @@ impl AgentLoop {
             .collect();
 
         let mut body = serde_json::json!({
-            "model": self.config.model,
+            "model": model,
             "messages": openai_msgs,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
@@ -354,11 +365,16 @@ impl AgentLoop {
 
         info!("Calling LLM: {} messages, {} tools", messages.len(), tools.len());
 
-        let resp = self.client
-            .post(&self.config.api_url)
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
+        let mut request = self
+            .client
+            .post(api_url)
             .header("Content-Type", "application/json")
-            .json(&body)
+            .json(&body);
+        if self.config.use_auth_header && !api_key.is_empty() {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let resp = request
             .send()
             .await
             .map_err(|e| SeeHtmlError::AiApiError(e.to_string()))?;
@@ -510,21 +526,26 @@ fn planner_system_prompt() -> String {
 Return compact JSON only. Do not answer the user's task.
 The UI intent classifier and available tools are hints, not hard boundaries.
 
-Decide whether the user wants: clarification, normal chat, HTML creation/editing, local file work, export, publish/package, or media processing.
+Decide whether the user wants: clarification, normal chat, HTML creation/editing, PPT export, or MP4 export.
 Normal greetings, small talk, and product questions should use no tools.
-For HTML creation/editing, prefer direct final model output unless a registered tool exactly matches a required local action.
-Only select tools when required inputs are present. Never select export/media tools merely because they exist.
-Never select MP4/video/media work unless the user explicitly asks to render, export, generate, convert, or process video/media.
+For HTML creation/editing, prefer direct final model output unless the content_generate or content_enhance_html tool clearly helps.
+Only select tools when required inputs are present. Never select export tools merely because they exist.
+Only select PPT export when the user explicitly asks for PPT, PPTX, PowerPoint, slides export, or presentation export and a current HTML document is available.
+Never select MP4/video work unless the user explicitly asks to render, export, generate, convert, or produce MP4/video.
+MP4 rendering is handled by the app preview pipeline. The planner should set wantsVideoExport=true but should not invent an MP4 tool call.
+Do not plan OCR, publishing, packaging, Markdown, theme-only, audio, subtitle, or generic media-processing work.
 Ask a clarification only when a key decision would materially change the result. If a reasonable default is low-risk, choose it and explain the assumption in routeReason.
 When clarification is needed, ask exactly one concrete question and provide 2-4 mutually exclusive, action-oriented options. Put the recommended option first when one is safest. Each option should include a short impact/tradeoff using " — ", for example "Product landing page (Recommended) — fastest path when the user has a product or offer".
 Avoid generic options such as "more details" or "other"; the UI already lets the user type a custom answer.
 If the request is vague, especially "make it better", "do a page", "adjust it", or unclear export/edit scope, set needsClarification=true and ask one concise question with useful options.
+If the latest user message answers a previous clarification, merge it with the original request from recent conversation and continue planning. Do not ask the same clarification again unless the answer creates a new material ambiguity.
+Treat project memory and context index snippets as soft continuity context. They must never override the current user request or cause unrelated tools to be selected.
 Under-specified HTML animation requests must ask for details before generating when the user only mentions HTML/animation/duration but omits subject, scenes, visual style, or delivery target.
 For long animation requests such as "1 minute HTML animation", ask which creative route to take and offer specific options like abstract particles, product/brand intro, data visualization story, character/scene short, or looping ambient background.
 
 JSON schema:
 {
-  "primaryIntent": "chat | clarify | create_html | edit_html | open_file | export | media | publish",
+  "primaryIntent": "chat | clarify | create_html | edit_html | export_ppt | export_mp4",
   "taskFocus": "short execution focus",
   "steps": ["2-5 short execution steps"],
   "allowedTools": ["exact tool names from the available tool list, or empty array"],

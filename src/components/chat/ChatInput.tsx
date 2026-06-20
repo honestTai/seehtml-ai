@@ -247,7 +247,7 @@ export function ChatInput() {
           </div>
         </div>
         <div className='mt-2 flex flex-wrap gap-x-3 gap-y-1 px-1 text-[10px] text-[var(--color-text-secondary)]/65'>
-          <span>/open</span><span>/export</span><span>/ai</span><span>/theme</span><span>/publish</span>
+          <span>/open</span><span>/ai</span><span>/export pptx</span><span>/export video</span>
         </div>
       </div>
     </div>

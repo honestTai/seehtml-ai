@@ -218,21 +218,29 @@ impl Default for PresentationTheme {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
+    pub provider: String,
     pub api_url: String,
     pub api_key: String,
     pub model: String,
     pub temperature: f64,
     pub max_tokens: u32,
+    pub use_auth_header: bool,
+    pub supports_vision: bool,
+    pub use_default_ocr: bool,
 }
 
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            api_url: "https://4router.net/v1/chat/completions".into(),
+            provider: "custom".into(),
+            api_url: String::new(),
             api_key: String::new(),
-            model: "gpt-5.5".into(),
+            model: String::new(),
             temperature: 0.7,
             max_tokens: 8192,
+            use_auth_header: true,
+            supports_vision: false,
+            use_default_ocr: true,
         }
     }
 }

@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useChatStore } from '../../stores/chatStore';
-import { HTML_SKILLS } from '../../lib/htmlSkills';
 
 interface Skill {
   id: string;
@@ -9,86 +8,35 @@ interface Skill {
   description: string;
   tools: string[]; // Tool chain: tools called in sequence
   naturalPrompt: string; // Natural language prompt for the LLM agent loop
+  command?: string;
 }
 
 const skills: Skill[] = [
   {
-    id: 'frontend-slides-quality', name: 'Frontend Slides Skill', emoji: '🧩',
-    description: 'Built-in HTML quality skill for deck-like pages: full HTML document, responsive slide layout, polished visual hierarchy, and iframe-safe preview.',
-    tools: ['html.skill.frontend_slides', 'html.quality_gate'],
-    naturalPrompt: '使用 Frontend Slides Skill 生成一套高质量 HTML 演示页：',
+    id: 'html-generate',
+    name: 'HTML Generator',
+    emoji: '◆',
+    description: '生成或修改完整 HTML，内置页面质量约束、动画逐帧导出约束和 iframe 预览约束。',
+    tools: ['content.generate', 'content.enhance_html'],
+    naturalPrompt: '生成一个高质量 HTML：',
   },
   {
-    id: 'motion-html-quality', name: 'Motion HTML Skill', emoji: '✨',
-    description: 'Built-in HTML quality skill for particles, Canvas, animation, and MP4-ready looping pages.',
-    tools: ['html.skill.motion_html', 'html.quality_gate'],
-    naturalPrompt: '使用 Motion HTML Skill 生成一个高质量动效 HTML：',
+    id: 'ppt-export',
+    name: 'Export PowerPoint',
+    emoji: '▣',
+    description: '把当前 HTML 按页面导出为 PPTX，一页 HTML 对应一页 PowerPoint。',
+    tools: ['export.export_pptx'],
+    naturalPrompt: '导出当前 HTML 为 PPTX',
+    command: '/export pptx',
   },
   {
-    id: 'canvas-video-quality', name: 'Canvas Video Skill', emoji: '🎞️',
-    description: 'Built-in HTML5 Canvas video skill for deterministic timelines, frame-seekable renderAtTime, and MP4-ready export.',
-    tools: ['html.skill.canvas_video', 'html.quality_gate', 'preview.render_mp4'],
-    naturalPrompt: '使用 Canvas Video Skill 生成一个可导出 MP4 的 HTML5 Canvas 动画：',
-  },
-  {
-    id: 'landing-html-quality', name: 'Landing HTML Skill', emoji: '🌐',
-    description: 'Built-in HTML quality skill for landing pages and product pages with responsive layout, strong hierarchy, and polished copy.',
-    tools: ['html.skill.landing_html', 'html.quality_gate'],
-    naturalPrompt: '使用 Landing HTML Skill 生成一个高质量页面：',
-  },
-  {
-    id: 'slide-gen', name: 'Slide Generator', emoji: '📊',
-    description: 'Generate HTML marketing pages from any topic using AI. Creates styled, structured page content.',
-    tools: ['content.generate'],
-    naturalPrompt: 'Generate 5 beautiful HTML pages about: ',
-  },
-  {
-    id: 'html-parse', name: 'HTML Parser', emoji: '📄',
-    description: 'Parse an HTML file into structured sections. Extracts headings, content, and metadata.',
-    tools: ['document.parse_html'],
-    naturalPrompt: 'Parse the HTML file at: ',
-  },
-  {
-    id: 'html-enhance', name: 'HTML Enhancer', emoji: '✨',
-    description: 'Enhance HTML content with AI: improve styling, readability, accessibility, and add visual elements.',
-    tools: ['content.enhance_html'],
-    naturalPrompt: 'Enhance and beautify this HTML content: ',
-  },
-  {
-    id: 'theme-apply', name: 'Theme Applier', emoji: '🎨',
-    description: 'Apply a professional theme to your page. Supports custom colors, fonts, dark mode.',
-    tools: ['style.apply_theme'],
-    naturalPrompt: 'Apply a modern professional theme with primary color #2563EB to the page',
-  },
-  {
-    id: 'export-full', name: 'Full Export Pipeline', emoji: '📦',
-    description: 'Complete export chain: Enhance HTML → Apply theme → Export PPTX. One-click professional output.',
-    tools: ['content.enhance_html', 'style.apply_theme', 'export.export_pptx'],
-    naturalPrompt: 'Export the page as a professionally styled PPTX: enhance content, apply theme, then export',
-  },
-  {
-    id: 'export-md', name: 'Markdown Export', emoji: '📝',
-    description: 'Convert HTML page to clean Markdown format. Preserves structure and headings.',
-    tools: ['export.export_markdown'],
-    naturalPrompt: 'Export the current page as Markdown',
-  },
-  {
-    id: 'ocr-extract', name: 'OCR Text Extract', emoji: '🔍',
-    description: 'Extract text from images using OCR (EasyOCR). Supports Chinese + English.',
-    tools: ['media.ocr'],
-    naturalPrompt: 'Extract text from image file: ',
-  },
-  {
-    id: 'video-make', name: 'Video Generator', emoji: '🎬',
-    description: 'Convert page images into MP4 video using FFmpeg. Set duration and resolution.',
-    tools: ['media.generate_video'],
-    naturalPrompt: 'Generate a video from the current project exports',
-  },
-  {
-    id: 'package', name: 'Package & Publish', emoji: '🚀',
-    description: 'Package page with all assets into a distributable folder. Ready for sharing.',
-    tools: ['publish.package'],
-    naturalPrompt: 'Package the page for distribution',
+    id: 'mp4-export',
+    name: 'Export MP4',
+    emoji: '▶',
+    description: '用预览渲染器逐帧采集动画，再通过 FFmpeg 合成 1080p MP4。',
+    tools: ['preview.render_frames', 'ffmpeg.encode_mp4'],
+    naturalPrompt: '导出当前 HTML 为高质量 MP4',
+    command: '/export video quality',
   },
 ];
 
@@ -100,15 +48,21 @@ export function SkillsPanel() {
   const [customPrompt, setCustomPrompt] = useState('');
 
   const handleRunSkill = (skill: Skill) => {
-    const prompt = customPrompt || skill.naturalPrompt;
-    sendMessage(prompt);
+    const prompt = customPrompt.trim();
+    if (prompt) {
+      sendMessage(prompt);
+    } else if (skill.command) {
+      sendCommand(skill.command, { display: skill.naturalPrompt });
+    } else {
+      sendMessage(skill.naturalPrompt);
+    }
     setCustomPrompt('');
   };
 
   return (
     <div className="py-2">
       <div className="px-3 py-1 text-[10px] font-semibold text-[var(--color-text-secondary)] uppercase tracking-wider">
-        Skills ({skills.length}) · HTML Quality {HTML_SKILLS.length}
+        Core Agent Flow ({skills.length})
       </div>
       {skills.map((skill) => (
         <div key={skill.id} className="mx-2 mb-0.5">

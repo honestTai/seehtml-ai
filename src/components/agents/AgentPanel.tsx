@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 interface AgentInfo {
   id: string;
@@ -9,29 +9,17 @@ interface AgentInfo {
 }
 
 const defaultAgents: AgentInfo[] = [
-  { id: 'Orchestrator', name: 'Orchestrator', emoji: '🎯', state: 'Idle', capabilities: [] },
-  { id: 'Document', name: 'PageAgent', emoji: '📄', state: 'Idle', capabilities: [
-    { action: 'parse_html', description: 'Parse marketing HTML page' },
-    { action: 'read_html_string', description: 'Parse HTML string' },
+  { id: 'Orchestrator', name: 'AgentPlanner', emoji: '◇', state: 'Idle', capabilities: [
+    { action: 'plan', description: 'Understand the user request before any tool call' },
+    { action: 'clarify', description: 'Ask one follow-up question when the brief is unclear' },
+  ] },
+  { id: 'Content', name: 'HTMLAgent', emoji: '◆', state: 'Idle', capabilities: [
+    { action: 'generate_html', description: 'Generate complete previewable HTML' },
+    { action: 'enhance_html', description: 'Edit existing HTML with quality checks' },
   ]},
-  { id: 'Content', name: 'ContentAgent', emoji: '🤖', state: 'Idle', capabilities: [
-    { action: 'generate', description: 'Generate AI content via 4Router' },
-    { action: 'enhance_html', description: 'Enhance content with AI' },
-  ]},
-  { id: 'Style', name: 'StyleAgent', emoji: '🎨', state: 'Idle', capabilities: [
-    { action: 'apply_theme', description: 'Apply marketing page theme' },
-  ]},
-  { id: 'Media', name: 'MediaAgent', emoji: '🎬', state: 'Idle', capabilities: [
-    { action: 'process', description: 'Process media files' },
-    { action: 'parse_subtitle', description: 'Parse subtitles (SRT/VTT)' },
-  ]},
-  { id: 'Export', name: 'ExportAgent', emoji: '📦', state: 'Idle', capabilities: [
-    { action: 'export_pptx', description: 'Export to PowerPoint' },
-    { action: 'export_markdown', description: 'Export to Markdown' },
-    { action: 'export_png', description: 'Export to PNG' },
-  ]},
-  { id: 'Publish', name: 'PublishAgent', emoji: '🚀', state: 'Idle', capabilities: [
-    { action: 'package', description: 'Package for distribution' },
+  { id: 'Export', name: 'ExportRenderer', emoji: '▣', state: 'Idle', capabilities: [
+    { action: 'export_pptx', description: 'Export HTML pages to PowerPoint' },
+    { action: 'render_mp4', description: 'Render animated HTML frames and encode MP4' },
   ]},
 ];
 

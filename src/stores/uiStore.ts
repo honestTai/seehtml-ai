@@ -8,6 +8,7 @@ interface UIState {
   sidebarOpen: boolean;
   sidebarTab: string;
   commandPaletteOpen: boolean;
+  modelSettingsOpen: boolean;
   theme: string;
   projectPath: string | null;
   workspaceSelectionPath: string | null;
@@ -16,6 +17,7 @@ interface UIState {
   setSidebarTab: (tab: string) => void;
   toggleCommandPalette: () => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setModelSettingsOpen: (open: boolean) => void;
   setTheme: (theme: string) => void;
   setProjectPath: (path: string | null) => void;
   setWorkspaceSelectionPath: (path: string | null) => void;
@@ -45,6 +47,7 @@ export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: true,
   sidebarTab: "files",
   commandPaletteOpen: false,
+  modelSettingsOpen: false,
   theme: "light",
   projectPath: loadProjectPath(),
   workspaceSelectionPath: null,
@@ -53,6 +56,7 @@ export const useUIStore = create<UIState>((set) => ({
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
   setCommandPaletteOpen: (commandPaletteOpen) => set({ commandPaletteOpen }),
+  setModelSettingsOpen: (modelSettingsOpen) => set({ modelSettingsOpen }),
   setTheme: (theme) => set({ theme }),
   setProjectPath: (projectPath) => {
     persistProjectPath(projectPath);
