@@ -80,7 +80,8 @@ Output format:
 - Use <section class="slide"> for each slide.
 - Include a fixed or sticky navigation control only if it improves the experience.
 - Include a refined visual system: typography, colors, layout rhythm, responsive constraints, and meaningful decorative elements.
-- If the topic implies motion or particle effects, use performant Canvas/requestAnimationFrame and keep the first frame visually meaningful.
+- If the topic implies motion, particles, Canvas, video, or MP4 export, use a deterministic Canvas timeline: define renderAtTime(seconds), assign window.renderAtTime, listen for "seehtml:export-frame", and render from event.detail.time or window.__SEEHTML_EXPORT_TIME__.
+- For video-like HTML, expose window.__SEEHTML_EXPORT_DURATION__ and render frames from absolute time rather than accumulated deltas.
 - Return ONLY the HTML document."#,
                 num_slides, topic
             ),

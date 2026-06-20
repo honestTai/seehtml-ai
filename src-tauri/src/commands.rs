@@ -667,9 +667,16 @@ pub async fn agent_chat(
     tools: Option<serde_json::Value>,
     system_prompt: Option<String>,
     max_iterations: Option<u32>,
+    session_id: Option<String>,
+    project_dir: Option<String>,
+    current_file: Option<String>,
+    current_html: Option<String>,
+    memory: Option<serde_json::Value>,
 ) -> CmdResult<serde_json::Value> {
     let agent_loop = &state.agent_loop;
     let msgs: Vec<LlmMessage> = serde_json::from_value(messages).map_err(|e| e.to_string())?;
+    let runtime_context =
+        build_agent_runtime_context(session_id, project_dir, current_file, current_html, memory);
 
     let tool_defs = if let Some(t) = tools {
         serde_json::from_value(t).map_err(|e| e.to_string())?
@@ -710,6 +717,7 @@ pub async fn agent_chat(
             )
         }),
         max_iterations: max_iterations.unwrap_or(10),
+        runtime_context,
     };
 
     let result = agent_loop
@@ -717,6 +725,87 @@ pub async fn agent_chat(
         .await
         .map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+}
+
+fn build_agent_runtime_context(
+    session_id: Option<String>,
+    project_dir: Option<String>,
+    current_file: Option<String>,
+    current_html: Option<String>,
+    memory: Option<serde_json::Value>,
+) -> AgentRuntimeContext {
+    let project_dir = non_empty_path(project_dir);
+    let current_file = non_empty_path(current_file);
+    let current_document = current_html
+        .as_deref()
+        .filter(|html| !html.trim().is_empty())
+        .map(|html| document_from_current_html(html, current_file.as_ref()));
+
+    AgentRuntimeContext {
+        session_id: session_id.filter(|value| !value.trim().is_empty()),
+        project_dir,
+        current_file,
+        current_document,
+        selected_text: None,
+        memory_snippets: memory_snippets_from_value(memory),
+        previous_results: std::collections::HashMap::new(),
+    }
+}
+
+fn non_empty_path(value: Option<String>) -> Option<PathBuf> {
+    value
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn document_from_current_html(html: &str, current_file: Option<&PathBuf>) -> Document {
+    let title = extract_html_title(html)
+        .or_else(|| {
+            current_file
+                .and_then(|path| path.file_stem())
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "document".into());
+    let sections = extract_page_sections(html, &title);
+
+    Document {
+        id: uuid::Uuid::new_v4().to_string(),
+        title,
+        source_path: current_file.cloned(),
+        html_content: html.to_string(),
+        metadata: DocumentMetadata::default(),
+        sections,
+        assets: vec![],
+        styles: vec![],
+    }
+}
+
+fn memory_snippets_from_value(memory: Option<serde_json::Value>) -> Vec<MemorySnippet> {
+    let Some(serde_json::Value::Object(map)) = memory else {
+        return Vec::new();
+    };
+
+    map.into_iter()
+        .filter_map(|(key, value)| {
+            if key.trim().is_empty() {
+                return None;
+            }
+            let value = value
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| value.to_string());
+            if value.trim().is_empty() {
+                return None;
+            }
+            Some(MemorySnippet {
+                key,
+                value,
+                source: Some("client-localStorage".into()),
+            })
+        })
+        .take(40)
+        .collect()
 }
 
 /// Get all available tool definitions (for client-side tool display)

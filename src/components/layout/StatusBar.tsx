@@ -17,15 +17,16 @@ export function StatusBar() {
 
   return (
     <div className='flex h-7 flex-shrink-0 items-center gap-3 overflow-hidden border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 text-[11px] text-[var(--color-text-secondary)]'>
-      <span>SeeHTML AI · 4Router gpt-5.5</span>
-      <span className='w-px h-3 bg-[var(--color-border)]' />
+      <span className='font-medium text-[var(--color-text-primary)]'>SeeHTML AI</span>
+      <span>4Router gpt-5.5</span>
+      <span className='h-3 w-px bg-[var(--color-border)]' />
       <span className='inline-flex items-center gap-1.5'>
         <span className={`h-1.5 w-1.5 rounded-full ${isProcessing ? 'bg-[var(--color-warning)]' : 'bg-[var(--color-success)]'}`} />
         {isProcessing ? t('status.processing') : t('status.ready')}
       </span>
-      <span className='w-px h-3 bg-[var(--color-border)]' />
+      <span className='h-3 w-px bg-[var(--color-border)]' />
       <span>{msgCount} {t('chat.messages')}</span>
-      {htmlDoc && <><span className='w-px h-3 bg-[var(--color-border)]' /><span>{t('status.htmlLoaded')}</span></>}
+      {htmlDoc && <><span className='h-3 w-px bg-[var(--color-border)]' /><span>{t('status.htmlLoaded')}</span></>}
       {renderStatus && (
         <>
           <span className='h-3 w-px bg-[var(--color-border)]' />

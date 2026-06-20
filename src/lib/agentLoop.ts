@@ -69,6 +69,11 @@ export async function runAgentLoop(
     systemPrompt?: string;
     maxIterations?: number;
     toolNames?: string[];
+    sessionId?: string | null;
+    projectDir?: string | null;
+    currentFile?: string | null;
+    currentHtml?: string | null;
+    memory?: Record<string, string>;
   }
 ): Promise<{
   assistantContent: string;
@@ -100,6 +105,11 @@ export async function runAgentLoop(
     tools,
     systemPrompt: options?.systemPrompt || null,
     maxIterations: options?.maxIterations || 10,
+    sessionId: options?.sessionId || null,
+    projectDir: options?.projectDir || null,
+    currentFile: options?.currentFile || null,
+    currentHtml: options?.currentHtml || null,
+    memory: options?.memory || null,
   });
 
   const response = result as AgentLoopResponse | LlmMessage[];

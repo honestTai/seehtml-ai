@@ -1,6 +1,8 @@
 export type ThemeMode = 'light' | 'dark' | 'auto';
 
 const STORAGE_KEY = 'seehtml-theme';
+export const THEME_CHANGE_EVENT = 'seehtml-themechange';
+let themeListenerAttached = false;
 
 export function getTheme(): ThemeMode {
   return (localStorage.getItem(STORAGE_KEY) as ThemeMode) || 'light';
@@ -9,33 +11,41 @@ export function getTheme(): ThemeMode {
 export function setTheme(mode: ThemeMode) {
   localStorage.setItem(STORAGE_KEY, mode);
   applyTheme(mode);
+  window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT, { detail: mode }));
 }
 
 export function applyTheme(mode: ThemeMode) {
   const root = document.documentElement;
   root.classList.remove('theme-light', 'theme-dark');
-
-  if (mode === 'auto') {
-    // Follow system preference via CSS media query
-    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    root.classList.add(isDark ? 'theme-dark' : 'theme-light');
-  } else {
-    root.classList.add(`theme-${mode}`);
-  }
+  const resolvedMode = resolveThemeMode(mode);
+  root.classList.add(`theme-${resolvedMode}`);
+  root.style.colorScheme = resolvedMode;
+  syncThemeColor(resolvedMode);
 }
 
-// Listen for system theme changes
+function resolveThemeMode(mode: ThemeMode): Exclude<ThemeMode, 'auto'> {
+  if (mode !== 'auto') return mode;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function syncThemeColor(mode: Exclude<ThemeMode, 'auto'>) {
+  const color = mode === 'dark' ? '#0f141c' : '#f6f8fb';
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+  }
+  meta.content = color;
+}
+
 export function initTheme() {
   const mode = getTheme();
   applyTheme(mode);
 
-  if (mode === 'auto') {
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
-      if (getTheme() === 'auto') {
-        const root = document.documentElement;
-        root.classList.remove('theme-light', 'theme-dark');
-        root.classList.add(e.matches ? 'theme-dark' : 'theme-light');
-      }
-    });
-  }
+  if (themeListenerAttached) return;
+  themeListenerAttached = true;
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (getTheme() === 'auto') applyTheme('auto');
+  });
 }

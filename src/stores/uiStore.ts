@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 const PROJECT_STORAGE_KEY = 'seehtml-project-path';
 
-export type WorkspaceMode = 'preview' | 'mp4' | 'files';
+export type WorkspaceMode = 'files' | 'preview' | 'mp4';
 
 interface UIState {
   sidebarOpen: boolean;
@@ -15,6 +15,7 @@ interface UIState {
   toggleSidebar: () => void;
   setSidebarTab: (tab: string) => void;
   toggleCommandPalette: () => void;
+  setCommandPaletteOpen: (open: boolean) => void;
   setTheme: (theme: string) => void;
   setProjectPath: (path: string | null) => void;
   setWorkspaceSelectionPath: (path: string | null) => void;
@@ -44,17 +45,18 @@ export const useUIStore = create<UIState>((set) => ({
   sidebarOpen: true,
   sidebarTab: "files",
   commandPaletteOpen: false,
-  theme: "dark",
+  theme: "light",
   projectPath: loadProjectPath(),
   workspaceSelectionPath: null,
-  workspaceMode: 'preview',
+  workspaceMode: 'files',
   toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
   setSidebarTab: (tab) => set({ sidebarTab: tab }),
   toggleCommandPalette: () => set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
+  setCommandPaletteOpen: (commandPaletteOpen) => set({ commandPaletteOpen }),
   setTheme: (theme) => set({ theme }),
   setProjectPath: (projectPath) => {
     persistProjectPath(projectPath);
-    set({ projectPath, workspaceSelectionPath: projectPath, workspaceMode: 'preview' });
+    set({ projectPath, workspaceSelectionPath: projectPath, workspaceMode: 'files' });
   },
   setWorkspaceSelectionPath: (workspaceSelectionPath) => set({ workspaceSelectionPath }),
   setWorkspaceMode: (workspaceMode) => set({ workspaceMode }),

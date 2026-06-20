@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react';
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { ArrowUp, FileText, FolderOpen, ImagePlus, X } from 'lucide-react';
 import { useChatStore } from '../../stores/chatStore';
 import { useI18n } from '../../lib/i18n';
@@ -26,6 +26,17 @@ export function ChatInput() {
   const fileRef = useRef<HTMLInputElement>(null);
   const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const hasImages = attachedImages.length > 0;
+  const canSend = inputValue.trim().length > 0 || hasImages;
+
+  useEffect(() => {
+    const focusInput = () => {
+      window.setTimeout(() => {
+        inputRef.current?.focus();
+      }, 0);
+    };
+    window.addEventListener('seehtml:focus-chat-input', focusInput);
+    return () => window.removeEventListener('seehtml:focus-chat-input', focusInput);
+  }, []);
 
   const appendFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter((file) => file.type.startsWith('image/'));
@@ -120,7 +131,7 @@ export function ChatInput() {
       const ui = useUIStore.getState();
       ui.setProjectPath(selected);
       ui.setWorkspaceSelectionPath(selected);
-      ui.setWorkspaceMode('preview');
+      ui.setWorkspaceMode('files');
       useChatStore.getState().ensureProjectSession(selected);
       notifyProjectFilesChanged(selected);
       addMessage({
@@ -140,8 +151,8 @@ export function ChatInput() {
   }, [addMessage, t]);
 
   return (
-    <div className='border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4 py-3'>
-      <div className='mx-auto max-w-3xl'>
+    <div className='border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-3'>
+      <div>
         <div className='rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 transition-colors focus-within:border-[var(--color-accent)]'>
           {hasImages && (
             <div className='mb-2 flex max-h-36 flex-wrap gap-2 overflow-y-auto pr-1'>
@@ -149,9 +160,11 @@ export function ChatInput() {
                 <div key={image.id} className='group relative h-20 w-24 overflow-hidden rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)]'>
                   <img src={image.dataUrl} alt={image.name} className='h-full w-full object-cover' />
                   <button
+                    type='button'
                     onClick={() => removeImage(image.id)}
                     className='absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-[var(--radius-control)] bg-black/65 text-xs leading-none text-white opacity-90 transition-opacity hover:bg-[var(--color-danger)] group-hover:opacity-100'
                     title='Remove image'
+                    aria-label={`Remove ${image.name}`}
                   >
                     <X size={12} />
                   </button>
@@ -165,63 +178,75 @@ export function ChatInput() {
 
           <textarea
             ref={inputRef}
+            name='agent-message'
+            aria-label={hasImages ? t('chat.placeholderImage') : t('chat.placeholder')}
+            autoComplete='off'
+            spellCheck={true}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder={hasImages ? t('chat.placeholderImage') : t('chat.placeholder')}
-            className='max-h-28 min-h-12 w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)]/65 focus:outline-none'
+            className='max-h-28 min-h-12 w-full resize-none bg-transparent px-1 py-1 text-[13px] leading-5 text-[var(--color-text-primary)] placeholder-[var(--color-text-secondary)]/70'
             rows={2}
           />
 
           <div className='flex items-center gap-2 pt-1'>
             <button
+              type='button'
               onClick={openLocalFile}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
               title={t('chat.openFile')}
               aria-label={t('chat.openFile')}
             >
               <FileText size={16} />
             </button>
             <button
+              type='button'
               onClick={openLocalFolder}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
               title={t('chat.openFolder')}
               aria-label={t('chat.openFolder')}
             >
               <FolderOpen size={16} />
             </button>
             <button
+              type='button'
               onClick={() => fileRef.current?.click()}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
               title={t('chat.attachImage')}
+              aria-label={t('chat.attachImage')}
             >
               <ImagePlus size={16} />
             </button>
-            <input ref={fileRef} type='file' accept='image/*' multiple onChange={handleFileChange} className='hidden' />
+            <input ref={fileRef} type='file' accept='image/*' multiple onChange={handleFileChange} className='hidden' aria-label={t('chat.attachImage')} />
             <span className='text-[11px] text-[var(--color-text-secondary)]/75'>
               {hasImages ? `${attachedImages.length} ${t('chat.images')}` : t('chat.pasteImage')}
             </span>
             <span className='flex-1' />
             {isProcessing && (
               <button
+                type='button'
                 onClick={stopProcessing}
                 className='rounded-[var(--radius-control)] bg-[var(--color-danger)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:brightness-95'
+                aria-label={t('chat.stop')}
               >
                 {t('chat.stop')}
               </button>
             )}
             <button
+              type='button'
               onClick={handleSend}
-              disabled={!inputValue.trim() && !hasImages}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-accent)] text-white transition-colors hover:bg-[var(--color-accent-hover)] disabled:opacity-50'
-              title={isProcessing ? t('chat.append') : 'Send'}
+              disabled={!canSend}
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-accent)] text-white transition-colors hover:bg-[var(--color-accent-hover)] disabled:opacity-45'
+              title={isProcessing ? t('chat.append') : t('chat.send')}
+              aria-label={isProcessing ? t('chat.append') : t('chat.send')}
             >
               <ArrowUp size={17} strokeWidth={2.4} />
             </button>
           </div>
         </div>
-        <div className='mt-2 flex flex-wrap gap-x-3 gap-y-1 px-1 text-[10px] text-[var(--color-text-secondary)]/60'>
+        <div className='mt-2 flex flex-wrap gap-x-3 gap-y-1 px-1 text-[10px] text-[var(--color-text-secondary)]/65'>
           <span>/open</span><span>/export</span><span>/ai</span><span>/theme</span><span>/publish</span>
         </div>
       </div>

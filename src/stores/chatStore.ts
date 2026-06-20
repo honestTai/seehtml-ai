@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AgentToolEvent, ChatMessage, ProcessingStep, QueuedRequest, WorkflowStep } from '../types';
+import type { AgentToolEvent, ChatMessage, ClarificationOption, ProcessingStep, QueuedRequest, WorkflowStep } from '../types';
 import { runAgentLoop, type AgentExecutionPlan, type LlmMessage } from '../lib/agentLoop';
 import { getLanguage, t, type Lang } from '../lib/i18n';
 import {
@@ -8,6 +8,16 @@ import {
   projectExportPath,
   projectHtmlPath,
 } from '../lib/projectPaths';
+import {
+  MP4_EXPORT_PROFILES,
+  getMp4ExportProfile,
+  inferMp4ExportProfileId,
+  mp4ProfileDescription,
+  mp4ProfileLabel,
+  mp4ProfileOptionLabel,
+  toMp4ExportProfileId,
+  type Mp4ExportProfileId,
+} from '../lib/mp4ExportProfiles';
 import { PREVIEWABLE_EXTENSIONS, usePreviewStore } from './previewStore';
 import { useUIStore } from './uiStore';
 import {
@@ -86,9 +96,12 @@ Try:
 const SYSTEM_PROMPT = `You are SeeHTML AI, a Codex-like agent for local HTML projects.
 You have a planning role before execution. The client route, selected quality profile, and visible tools are hints, not hard boundaries.
 For every turn, first decide whether the user wants: clarification, normal chat, HTML creation/editing, local file/project work, export, or media processing.
-If the request is vague, especially "make it better", "adjust it", "do a page", or unclear export/edit scope, ask exactly one concise follow-up question and offer 2-5 short options. Do not fabricate requirements.
+Ask a follow-up only when a key decision would materially change the result; otherwise proceed with a reasonable assumption and mention it briefly.
+If the request is vague, especially "make it better", "adjust it", "do a page", or unclear export/edit scope, ask exactly one concrete follow-up question and offer 2-4 mutually exclusive options with a recommended option when appropriate. Do not fabricate requirements.
+For under-specified HTML animation requests, especially when the user only gives duration such as "1 minute" but no subject, scenes, visual style, or delivery target, ask a detailed clarification question before generating.
 Use available tools only when they clearly help and required inputs are present. Do not call export/media tools merely because they exist.
 Never create or render MP4 unless the user explicitly asks to export/render/generate/convert MP4 or video.
+When MP4 export is requested without a quality/speed version, ask the user to choose Fast, Standard, or Quality before rendering.
 If the user asks to create or edit HTML and the intent is clear, return one complete usable <!DOCTYPE html> document with inline CSS/JS, or use tools if they are better for the task.
 If a tool is unavailable or not needed, answer directly. Never answer only "Task completed"; state the concrete result.
 Respond in the same language as the user.`;
@@ -214,6 +227,10 @@ function persistSessions(sessions: ChatSession[], activeSessionId: string | null
   } catch {}
 }
 
+function sortSessionsByUpdatedAt(sessions: ChatSession[]): ChatSession[] {
+  return [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
 function loadMemory(): Record<string, string> {
   try {
     const saved = localStorage.getItem(MEMORY_KEY);
@@ -280,25 +297,55 @@ export const useChatStore = create<ChatState>((set, get) => ({
     get().saveHistory();
     beginProcessingTimeline(set, get, requestId, intent);
 
-    try {
-      const projectPath = requireProjectForIntent(intent, images.length > 0);
-
-      if (intent.wantsVideoExport && !intent.wantsHtmlOutput) {
-        const previewDoc = usePreviewStore.getState().document;
-        const currentHtml = state.htmlDocument || (previewDoc?.kind === 'html' ? previewDoc.content : null);
-        if (!currentHtml) throw new Error(t('chat.noHtmlDocument'));
-        usePreviewStore.getState().requestRender({
-          type: 'mp4',
-          pageCount: intent.requestedPages,
-          reason: content,
-        });
-        const agentMsg: ChatMessage = {
+    if (intent.needsClarification && intent.clarificationQuestion) {
+      const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'agent',
-        content: t('export.mp4BackgroundRunning'),
+        content: formatClarificationContent(intent),
         timestamp: new Date().toISOString(),
+        clarification: buildClarificationPrompt(intent, displayContent),
         workflow: buildWorkflowForIntent(intent),
       };
+      let completed = false;
+      set((s) => {
+        if (s.activeRequestId !== requestId) return {};
+        completed = true;
+        return {
+          messages: [...s.messages, agentMsg],
+          isProcessing: false,
+          processingSteps: [],
+          activeRequestId: null,
+        };
+      });
+      get().saveHistory();
+      if (completed) drainQueuedRequest(set, get);
+      return;
+    }
+
+    try {
+      const projectPath = requireProjectForIntent(intent, images.length > 0);
+      const previewDoc = usePreviewStore.getState().document;
+      const currentHtml = state.htmlDocument || (previewDoc?.kind === 'html' ? previewDoc.content || null : null);
+      const currentFile = previewDoc?.path || null;
+
+      if (intent.wantsVideoExport && !intent.wantsHtmlOutput) {
+        if (!currentHtml) throw new Error(t('chat.noHtmlDocument'));
+        const clarification = intent.mp4ProfileId ? undefined : buildMp4ExportClarification(displayContent);
+        const responseContent = intent.mp4ProfileId
+          ? queueMp4RenderFromProfile({
+              profileId: intent.mp4ProfileId,
+              requestedPages: intent.requestedPages,
+              reason: content,
+            })
+          : formatMp4ProfileChoiceContent();
+        const agentMsg: ChatMessage = {
+          id: crypto.randomUUID(),
+          role: 'agent',
+          content: responseContent,
+          timestamp: new Date().toISOString(),
+          clarification,
+          workflow: buildWorkflowForIntent(intent),
+        };
         let completed = false;
         set((s) => {
           if (s.activeRequestId !== requestId) return {};
@@ -317,7 +364,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const prompt = images.length > 0
         ? await withTimeout(buildImagePrompt(content, images, intent, projectPath), REQUEST_TIMEOUT_MS, t('chat.timeout'))
-        : buildPromptForIntent(content, state.htmlDocument, intent, projectPath);
+        : buildPromptForIntent(content, currentHtml, intent, projectPath);
 
       const { assistantContent, messages, plan } = await withTimeout(
         runAgentLoop(
@@ -327,6 +374,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
             systemPrompt: SYSTEM_PROMPT,
             maxIterations: intent.maxIterations,
             toolNames: intent.toolNames,
+            sessionId: state.activeSessionId,
+            projectDir: projectPath || null,
+            currentFile,
+            currentHtml,
+            memory: state.conversationMemory,
           },
         ),
         REQUEST_TIMEOUT_MS,
@@ -336,27 +388,40 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const html = extractHtmlFromAgentOutput(assistantContent, messages);
       const errors = collectToolErrors(messages);
       const toolEvents = collectToolEvents(messages);
-      const htmlQuality = html ? validateHtmlQuality(html, getLanguage()) : [];
+      const htmlQuality = html ? validateHtmlQuality(html, getLanguage(), intent.htmlSkill) : [];
       let savedHtmlPath: string | null = null;
       if (html) {
         savedHtmlPath = await saveHtmlToProject(html, projectPath);
         if (intent.wantsVideoExport) {
-          usePreviewStore.getState().requestRender({
-            type: 'mp4',
-            pageCount: intent.requestedPages,
-            reason: content,
-          });
+          if (intent.mp4ProfileId) {
+            queueMp4RenderFromProfile({
+              profileId: intent.mp4ProfileId,
+              requestedPages: intent.requestedPages,
+              reason: content,
+            });
+          }
         }
       }
+      const mp4Clarification = html && intent.wantsVideoExport && !intent.mp4ProfileId
+        ? buildMp4ExportClarification(displayContent)
+        : undefined;
+      const assistantText = withSavedPath(
+        formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
+        savedHtmlPath,
+      );
       const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'agent',
-        content: withSavedPath(
-          formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
-          savedHtmlPath,
-        ),
+        content: mp4Clarification ? `${assistantText}\n\n${formatMp4ProfileChoiceContent()}` : assistantText,
         timestamp: new Date().toISOString(),
         toolEvents,
+        clarification: plan?.needs_clarification
+          ? {
+              question: plan.clarification_question || assistantContent,
+              options: parseClarificationOptions(plan.clarification_options),
+              originalRequest: displayContent,
+            }
+          : mp4Clarification,
         workflow: buildWorkflowForIntent(intent, plan),
       };
 
@@ -394,14 +459,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     const parsed = parseCommand(command);
-    const intent = classifyIntent(command, false, Boolean(state.htmlDocument));
+    const commandParams = isRecord(params) ? params : {};
+    const commandMp4ProfileId = parsed.cmd === 'export' && normalizeExportFormat(parsed.rest, commandParams) === 'video'
+      ? normalizeMp4ExportProfileId(parsed.rest, commandParams)
+      : null;
+    const baseIntent = classifyIntent(command, false, Boolean(state.htmlDocument));
+    const intent = {
+      ...baseIntent,
+      mp4ProfileId: commandMp4ProfileId ?? baseIntent.mp4ProfileId,
+    };
     const commandHtmlSkill = parsed.cmd === 'ai' || parsed.cmd === 'generate'
       ? selectHtmlSkill(parsed.rest, 'create')
       : parsed.cmd === 'theme' || parsed.cmd === 'style'
       ? selectHtmlSkill(parsed.rest, 'edit')
       : undefined;
-    const commandParams = isRecord(params) ? params : {};
-    const displayCommand = commandParams.path ? `${command} ${String(commandParams.path)}` : command;
+    const displayCommand = typeof commandParams.display === 'string' && commandParams.display.trim()
+      ? commandParams.display
+      : commandParams.path ? `${command} ${String(commandParams.path)}` : command;
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -426,6 +500,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let nextHtml: string | null = null;
       let savedHtmlPath: string | null = null;
       let workflowSteps: WorkflowStep[] | undefined;
+      let clarification: ChatMessage['clarification'];
 
       if (parsed.cmd === 'open') {
         const path = await resolveOpenPath(parsed.rest, commandParams);
@@ -465,21 +540,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (format === 'png') {
           responseContent = t('editor.capturePng');
         } else if (format === 'video') {
-          usePreviewStore.getState().requestRender({
-            type: 'mp4',
-            reason: command,
+          const profileId = normalizeMp4ExportProfileId(parsed.rest, commandParams);
+          if (profileId) {
+            responseContent = queueMp4RenderFromProfile({
+              profileId,
+              reason: command,
+            });
+          } else {
+            responseContent = formatMp4ProfileChoiceContent();
+            clarification = buildMp4ExportClarification(displayCommand);
+          }
+          workflowSteps = buildWorkflowForIntent({
+            ...intent,
+            wantsVideoExport: true,
+            mp4ProfileId: profileId,
           });
-          responseContent = t('export.mp4BackgroundRunning');
         } else {
           const ext = format === 'markdown' || format === 'md' ? 'md' : format;
-          const result = await withTimeout(invoke('export_document', {
+          const outputPath = projectExportPath(projectPath, `document.${ext}`);
+          startBackgroundDocumentExport({
             html: state.htmlDocument,
             format,
-            theme: null,
-            outputPath: projectExportPath(projectPath, `document.${ext}`),
-          }), REQUEST_TIMEOUT_MS, t('chat.timeout'));
-          notifyProjectFilesChanged(projectPath);
-          responseContent = formatExportResult(result);
+            outputPath,
+            projectPath,
+          });
+          responseContent = backgroundExportMessage(format, outputPath);
         }
       } else if (parsed.cmd === 'publish' || parsed.cmd === 'package') {
         if (!state.htmlDocument) throw new Error(t('chat.noHtmlDocument'));
@@ -507,7 +592,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         savedHtmlPath = await saveHtmlToProject(nextHtml, projectPath);
         if (commandHtmlSkill) {
           responseContent = `${responseContent}\n${summarizeHtmlQuality(
-            validateHtmlQuality(nextHtml, getLanguage()),
+            validateHtmlQuality(nextHtml, getLanguage(), commandHtmlSkill),
             commandHtmlSkill,
             getLanguage(),
           )}`;
@@ -519,6 +604,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: 'agent',
         content: withSavedPath(responseContent, savedHtmlPath),
         timestamp: new Date().toISOString(),
+        clarification,
         workflow: workflowSteps,
       };
       let completed = false;
@@ -567,7 +653,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (get().isProcessing) return;
     const synced = syncActiveSessionSnapshot(get());
     const next = createChatSession(projectPath ?? useUIStore.getState().projectPath ?? null);
-    const sessions = [next, ...synced].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const sessions = sortSessionsByUpdatedAt([next, ...synced]);
     set({
       sessions,
       activeSessionId: next.id,
@@ -586,7 +672,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const synced = syncActiveSessionSnapshot(get());
     const target = synced.find((session) => session.id === id);
     if (!target) return;
-    const sessions = synced.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const sessions = sortSessionsByUpdatedAt(synced);
     set({
       sessions,
       activeSessionId: id,
@@ -610,7 +696,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const sessions = existing
       ? synced
       : [target, ...synced];
-    const sorted = sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const sorted = sortSessionsByUpdatedAt(sessions);
     set({
       sessions: sorted,
       activeSessionId: target.id,
@@ -638,7 +724,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const state = get();
       const msgs = state.messages.slice(-MAX_SESSION_MESSAGES);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(msgs));
-      const sessions = syncActiveSessionSnapshot(state).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const sessions = sortSessionsByUpdatedAt(syncActiveSessionSnapshot(state));
       set({ sessions });
       persistSessions(sessions, state.activeSessionId);
     } catch {}
@@ -657,10 +743,11 @@ interface AgentIntent {
   requestedPages?: number;
   wantsAnimation?: boolean;
   wantsVideoExport?: boolean;
+  mp4ProfileId?: Mp4ExportProfileId | null;
   htmlSkill?: HtmlSkill;
   needsClarification?: boolean;
   clarificationQuestion?: string;
-  clarificationOptions?: string[];
+  clarificationOptions?: ClarificationOption[];
 }
 
 function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): AgentIntent {
@@ -670,10 +757,11 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
   const requestedPages = inferPageCountFromText(text);
   const wantsAnimation = /(动画|动效|运动|自动渲染|逐页渲染|粒子|转场|animate|animated|animation|motion|transition)/i.test(text);
   const wantsVideoExport = isExplicitMp4ExportRequest(text);
+  const mp4ProfileId = wantsVideoExport ? inferMp4ExportProfileId(text) : null;
   const createWords = /(生成|创建|做一个|做个|写一个|写个|设计|制作|页面|网页|html|动效|粒子|炫酷|landing|create|generate|make|build|design)/i;
   const htmlCreationWords = /(页面|网页|html|动效|动画|粒子|炫酷|landing|page|site|web|html|animate|animation|motion|design)/i;
   const editWords = /(修改|优化|改成|换成|调整|美化|润色|重做|重新弄|重新做|主题|风格|edit|update|change|theme|style|polish|redo|rework)/i;
-  const exportWords = /(导出|输出|转成|转为|转换|发布|打包|export|convert|publish|package|pptx|markdown|\bmd\b|png|pdf)/i;
+  const exportWords = /(导出|输出|转成|转为|转换|发布|打包|export|convert|publish|package|ppt|pptx|powerpoint|markdown|\bmd\b|png|pdf|mp4|video)/i;
   const mediaWords = /(视频|音频|字幕|媒体|mp4|mov|webm|srt|vtt|video|audio|subtitle|media)/i;
 
   if (hasImage) {
@@ -689,6 +777,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       requestedPages,
       wantsAnimation,
       wantsVideoExport,
+      mp4ProfileId,
       htmlSkill,
     };
   }
@@ -699,14 +788,22 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
   const asksMediaOnly = mediaWords.test(text) && !asksCreate && !asksEdit && !asksExportOnly;
 
   if (asksCreate || asksEdit) {
+    if (asksCreate && isUnderSpecifiedAnimationRequest(text)) {
+      return clarificationIntent(
+        zh ? '动画信息不够明确' : 'Animation brief is incomplete',
+        zh
+          ? '需要先确认动画主题、视觉路线和交付方式，避免直接生成一个跑偏的 1 分钟页面。'
+          : 'Confirm the animation subject, visual route, and delivery target before generating a long timeline.',
+        animationClarificationQuestion(text, zh),
+        animationClarificationOptions(zh),
+      );
+    }
     if (asksCreate && isVagueCreateRequest(text)) {
       return clarificationIntent(
         zh ? '页面目标不够明确' : 'Page goal is unclear',
         zh ? '要先确认页面主题和风格，再生成 HTML。' : 'Confirm the page topic and style before generating HTML.',
         zh ? '你想做什么主题的 HTML？' : 'What should this HTML be about?',
-        zh
-          ? ['营销/产品页', '演示/PPT 页', 'Canvas 动画页', '打开现有 HTML 再改']
-          : ['Landing/product page', 'Slide/deck page', 'Canvas animation', 'Open existing HTML first'],
+        createClarificationOptions(zh),
       );
     }
     if (asksEdit && isVagueEditRequest(text)) {
@@ -714,9 +811,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
         zh ? '修改范围不够明确' : 'Edit scope is unclear',
         zh ? '需要先确认具体改哪里，避免把现有页面改偏。' : 'Confirm the edit scope before changing the current page.',
         zh ? '你想重点改哪一块？' : 'What should I focus on changing?',
-        zh
-          ? ['整体 UI 质感', '布局结构', '颜色/字体', '动画/交互']
-          : ['Overall UI polish', 'Layout structure', 'Color/typography', 'Motion/interaction'],
+        editClarificationOptions(zh),
       );
     }
     const htmlSkill = selectHtmlSkill(text, asksEdit ? 'edit' : 'create');
@@ -731,6 +826,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       requestedPages,
       wantsAnimation,
       wantsVideoExport,
+      mp4ProfileId,
       htmlSkill,
     };
   }
@@ -747,6 +843,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       requestedPages,
       wantsAnimation,
       wantsVideoExport,
+      mp4ProfileId,
     };
   }
 
@@ -762,6 +859,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       requestedPages,
       wantsAnimation,
       wantsVideoExport,
+      mp4ProfileId,
     };
   }
 
@@ -774,6 +872,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
     requestedPages,
     wantsAnimation,
     wantsVideoExport,
+    mp4ProfileId,
   };
 }
 
@@ -781,6 +880,86 @@ function isExplicitMp4ExportRequest(text: string): boolean {
   const actionBeforeFormat = /(?:导出|输出|生成|制作|渲染|合成|转成|转为|转换|做一个|做个|encode|export|render|generate|create|make|convert).{0,18}(?:mp4|视频|video)/i;
   const formatBeforeAction = /(?:mp4|视频|video).{0,18}(?:导出|输出|生成|制作|渲染|合成|转成|转为|转换|encode|export|render|generate|create|make|convert)/i;
   return actionBeforeFormat.test(text) || formatBeforeAction.test(text);
+}
+
+function isUnderSpecifiedAnimationRequest(text: string): boolean {
+  const normalized = text
+    .replace(/[，。,.!！?？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const asksAnimation = /(动画|动效|运动|转场|animate|animated|animation|motion|transition)/i.test(normalized);
+  const asksHtml = /(html|网页|页面|web|page)/i.test(normalized);
+  if (!asksAnimation || !asksHtml) return false;
+
+  const hasCreativeDetail = /关于|主题|产品|品牌|公司|活动|课程|报告|登录|注册|仪表盘|个人|官网|营销|开场|片头|故事|角色|人物|场景|宇宙|星空|海洋|城市|山水|国风|水墨|赛博|科技|霓虹|像素|电影|数据|图表|粒子|烟花|音乐|倒计时|logo|SaaS|CRM|电商|教育|医疗|金融|旅游|游戏|portfolio|landing|dashboard|login|signup|product|brand|story|character|scene|cyber|neon|particle|data|chart|logo/i.test(normalized);
+  const hasDuration = /(\d+(?:\.\d+)?\s*(秒|分钟|分|s|sec|second|seconds|min|minute|minutes)|一\s*分钟|半\s*分钟|60\s*s)/i.test(normalized);
+  return !hasCreativeDetail || (hasDuration && !hasCreativeDetail);
+}
+
+function animationClarificationQuestion(text: string, zh: boolean): string {
+  const hasDuration = /(\d+(?:\.\d+)?\s*(秒|分钟|分|s|sec|second|seconds|min|minute|minutes)|一\s*分钟|半\s*分钟|60\s*s)/i.test(text);
+  if (zh) {
+    return hasDuration
+      ? '这个时长较长的 HTML 动画，先选哪条创作路线？'
+      : '这个 HTML 动画想做哪种内容方向？';
+  }
+  return hasDuration
+    ? 'Which creative route should this longer HTML animation follow?'
+    : 'What kind of HTML animation should this be?';
+}
+
+function animationClarificationOptions(zh: boolean): ClarificationOption[] {
+  return zh
+    ? [
+        option('科技粒子/抽象视觉', '适合 1 分钟循环，重点做星云、流光、粒子轨迹和稳定视觉节奏。', true),
+        option('产品/品牌介绍动画', '适合有品牌名、卖点和开场收尾；需要你补一个产品或品牌主题。'),
+        option('数据可视化故事', '适合展示趋势、指标、行业洞察；画面更像动态信息图。'),
+        option('循环背景/屏保动效', '适合做可长时间播放的氛围背景，内容少但导出更稳。'),
+      ]
+    : [
+        option('Tech particles / abstract', 'Best for a one-minute loop with nebula, light trails, particles, and stable pacing.', true),
+        option('Product / brand intro', 'Best when you have a brand name, value props, and an opening/ending beat.'),
+        option('Data visualization story', 'Best for trends, metrics, and insights with a motion-infographic feel.'),
+        option('Looping ambient background', 'Best for a long-running background with fewer content beats and steadier export.'),
+      ];
+}
+
+function createClarificationOptions(zh: boolean): ClarificationOption[] {
+  return zh
+    ? [
+        option('营销/产品页', '用于介绍产品、服务或活动；我会补齐首屏、卖点、证明和行动按钮。', true),
+        option('演示/PPT 页', '用于多页讲解或汇报；我会按页面结构组织标题、图表区和结论。'),
+        option('Canvas 动画页', '用于强视觉动效；我会优先做可预览、可逐帧导出的动画。'),
+        option('打开现有 HTML 再改', '先选择本地 HTML 文件，再基于真实页面继续优化。', false, {
+          command: '/open',
+          params: { display: zh ? '打开现有 HTML 再改' : 'Open an existing HTML first' },
+        }),
+      ]
+    : [
+        option('Landing/product page', 'Use this for a product, service, or campaign with hero, proof, and CTA.', true),
+        option('Slide/deck page', 'Use this for multi-page explanation or reporting with titles, visual areas, and takeaways.'),
+        option('Canvas animation', 'Use this for strong motion; I will prioritize previewable and frame-seekable animation.'),
+        option('Open existing HTML first', 'Pick a local HTML file first, then continue from the real page.', false, {
+          command: '/open',
+          params: { display: 'Open an existing HTML first' },
+        }),
+      ];
+}
+
+function editClarificationOptions(zh: boolean): ClarificationOption[] {
+  return zh
+    ? [
+        option('整体 UI 质感', '保留结构，重点提升留白、层级、按钮和视觉完成度。', true),
+        option('布局结构', '调整页面分区、栅格、响应式和信息顺序，改动会更明显。'),
+        option('颜色/字体', '只改视觉主题、字号、字体和配色，风险较低。'),
+        option('动画/交互', '增强过渡、hover、滚动或动效，需要保证不影响导出稳定性。'),
+      ]
+    : [
+        option('Overall UI polish', 'Keep the structure and improve spacing, hierarchy, buttons, and visual finish.', true),
+        option('Layout structure', 'Change sections, grid, responsiveness, and information order; this is more visible.'),
+        option('Color/typography', 'Only adjust theme, type scale, fonts, and palette; lower risk.'),
+        option('Motion/interaction', 'Improve transitions, hover, scroll, or animation while keeping export stable.'),
+      ];
 }
 
 function isVagueCreateRequest(text: string): boolean {
@@ -809,7 +988,7 @@ function clarificationIntent(
   title: string,
   summary: string,
   question: string,
-  options: string[],
+  options: ClarificationOption[],
 ): AgentIntent {
   return {
     id: 'clarify',
@@ -821,6 +1000,108 @@ function clarificationIntent(
     clarificationQuestion: question,
     clarificationOptions: options,
   };
+}
+
+function formatClarificationContent(intent: AgentIntent): string {
+  const question = intent.clarificationQuestion || (getLanguage() === 'zh' ? '你想怎么继续？' : 'How should I continue?');
+  const detailHint = getLanguage() === 'zh'
+    ? '点一个选项我就继续；也可以自定义补充更具体的主题、风格、节奏或导出要求。'
+    : 'Choose one option and I will continue; or add a custom subject, style, pacing, or export requirement.';
+  return `${question}\n\n${detailHint}`;
+}
+
+function buildClarificationPrompt(intent: AgentIntent, originalRequest: string): ChatMessage['clarification'] {
+  if (!intent.clarificationQuestion || !intent.clarificationOptions?.length) return undefined;
+  return {
+    question: intent.clarificationQuestion,
+    options: intent.clarificationOptions,
+    originalRequest,
+  };
+}
+
+function option(
+  label: string,
+  description: string,
+  recommended = false,
+  extra: Partial<ClarificationOption> = {},
+): ClarificationOption {
+  return { label, description, recommended, ...extra };
+}
+
+function parseClarificationOption(value: string): ClarificationOption {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const recommended = /\((recommended|推荐)\)|（(recommended|推荐)）/i.test(normalized);
+  const withoutBadge = normalized
+    .replace(/\s*[\(（](recommended|推荐)[\)）]\s*/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const separator = withoutBadge.match(/\s(?:—|--|-|：|:)\s/);
+  if (!separator || separator.index === undefined) {
+    return { label: withoutBadge || normalized, recommended };
+  }
+
+  const label = withoutBadge.slice(0, separator.index).trim();
+  const description = withoutBadge.slice(separator.index + separator[0].length).trim();
+  return {
+    label: label || withoutBadge,
+    description: description || undefined,
+    recommended,
+  };
+}
+
+function parseClarificationOptions(options: string[] | undefined): ClarificationOption[] {
+  return (options || [])
+    .map(parseClarificationOption)
+    .filter((item) => item.label)
+    .slice(0, 5);
+}
+
+function buildMp4ExportClarification(originalRequest: string): ChatMessage['clarification'] {
+  const lang = getLanguage();
+  const zh = lang === 'zh';
+  return {
+    question: zh ? '选择一个 MP4 导出版本' : 'Choose an MP4 export version',
+    originalRequest,
+    options: MP4_EXPORT_PROFILES.map((profile) => ({
+      label: mp4ProfileOptionLabel(profile, lang),
+      description: mp4ProfileDescription(profile, lang),
+      recommended: profile.id === 'standard',
+      command: '/export mp4',
+      params: {
+        format: 'mp4',
+        profileId: profile.id,
+        display: zh
+          ? `选择${mp4ProfileOptionLabel(profile, lang)}导出 MP4`
+          : `Export MP4 as ${mp4ProfileOptionLabel(profile, lang)}`,
+      },
+    })),
+  };
+}
+
+function formatMp4ProfileChoiceContent(): string {
+  return getLanguage() === 'zh'
+    ? '可以导出 MP4。先选择导出版本：快速版更快，标准版推荐，高清版最流畅但耗时最长。'
+    : 'MP4 export is available. Choose a version first: Fast is quicker, Standard is recommended, and Quality is smoothest but slowest.';
+}
+
+function queueMp4RenderFromProfile({
+  profileId,
+  requestedPages,
+  reason,
+}: {
+  profileId: Mp4ExportProfileId;
+  requestedPages?: number;
+  reason: string;
+}): string {
+  const profile = getMp4ExportProfile(profileId);
+  usePreviewStore.getState().requestRender({
+    type: 'mp4',
+    pageCount: requestedPages,
+    reason,
+    profileId: profile.id,
+    frameRate: profile.fps,
+  });
+  return `${t('export.mp4BackgroundRunning')} · ${mp4ProfileOptionLabel(profile, getLanguage())}`;
 }
 
 function inferPageCountFromText(text: string): number | undefined {
@@ -887,7 +1168,9 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
     : intent.toolNames && intent.toolNames.length === 0
     ? (zh ? '本轮明确不开放工具，只做澄清或直接回复。' : 'Tools are explicitly disabled for clarification or direct reply.')
     : intent.wantsVideoExport
-    ? (zh ? '明确请求 MP4 时，后台渲染器逐帧截图，再调用 FFmpeg 合成。' : 'For explicit MP4 requests, the background renderer captures frames, then FFmpeg encodes.')
+    ? intent.mp4ProfileId
+      ? `${zh ? '明确请求 MP4：' : 'Explicit MP4 request: '}${mp4ProfileOptionLabel(getMp4ExportProfile(intent.mp4ProfileId), getLanguage())}`
+      : (zh ? '明确请求 MP4，但需要先选择导出版本。' : 'Explicit MP4 request; an export version must be selected first.')
     : (zh ? '开放已注册工具给模型自动选择；不用工具时直接回复。' : 'Registered tools are available for the model to choose; answer directly when no tool is needed.');
   const skillDetail = intent.htmlSkill
     ? `${pageDetail} ${motionDetail} ${zh ? '内置质量 Skill：' : 'Built-in quality skill: '}${skillLabel(intent.htmlSkill, getLanguage())}`
@@ -909,7 +1192,9 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
       id: 'execute',
       title: intent.wantsVideoExport ? (zh ? '准备后台渲染' : 'Prepare background render') : intent.toolNames && intent.toolNames.length > 0 ? (zh ? '执行工具轮' : 'Run tool turns') : intent.toolNames && intent.toolNames.length === 0 ? (zh ? '直接追问' : 'Ask directly') : (zh ? '模型自主编排' : 'Model orchestration'),
       detail: intent.wantsVideoExport
-        ? (zh ? 'HTML 完成后仅排入 MP4 队列，工作区继续停在当前预览。' : 'After HTML is ready, MP4 is queued while the workspace stays on the current preview.')
+        ? intent.mp4ProfileId
+          ? (zh ? '按所选版本排入 MP4 队列，导出完成后切到 MP4 预览。' : 'Queue MP4 with the selected version and open the MP4 preview when done.')
+          : (zh ? '先提示用户选择快速/标准/高清版本，再触发后台渲染。' : 'Ask the user to choose Fast, Standard, or Quality before rendering.')
         : intent.toolNames && intent.toolNames.length > 0
         ? (zh ? '按白名单顺序收集工具结果。' : 'Collect tool results from the whitelist.')
         : intent.toolNames && intent.toolNames.length === 0
@@ -963,6 +1248,26 @@ function beginProcessingTimeline(
 }
 
 function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan): WorkflowStep[] | undefined {
+  if (intent.needsClarification) {
+    return [
+      {
+        id: 'planner',
+        agent: 'AgentPlanner',
+        action: 'ask_clarification',
+        parameters: {
+          intent: intent.id,
+          question: intent.clarificationQuestion,
+        },
+        depends_on: [],
+        status: 'Done',
+        result: {
+          focus: intent.summary,
+          options: (intent.clarificationOptions || []).map((item) => item.label),
+        },
+      },
+    ];
+  }
+
   if (plan) {
     if (!isOrchestrationPlan(plan)) return undefined;
 
@@ -1015,13 +1320,18 @@ function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan):
     }
 
     if (plan.wants_video_export) {
+      const profile = intent.mp4ProfileId ? getMp4ExportProfile(intent.mp4ProfileId) : null;
       steps.push({
         id: 'render-mp4',
         agent: 'PreviewRenderer',
-        action: 'render_mp4',
-        parameters: { resolution: '1920x1080', fps: 30 },
+        action: profile ? 'render_mp4' : 'select_mp4_profile',
+        parameters: {
+          resolution: '1920x1080',
+          profile: profile ? mp4ProfileLabel(profile, getLanguage()) : 'pending_user_choice',
+          fps: profile?.fps ?? 'pending_user_choice',
+        },
         depends_on: steps.some((step) => step.id === 'preview') ? ['preview'] : ['planner'],
-        status: 'Running',
+        status: profile ? 'Running' : 'Waiting',
         result: { encoder: 'FFmpeg', mode: 'page-by-page animated frames' },
       });
     }
@@ -1074,13 +1384,18 @@ function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan):
     });
   }
   if (intent.wantsVideoExport) {
+    const profile = intent.mp4ProfileId ? getMp4ExportProfile(intent.mp4ProfileId) : null;
     steps.push({
       id: 'render-mp4',
       agent: 'PreviewRenderer',
-      action: 'render_mp4',
-      parameters: { resolution: '1920x1080', fps: 30 },
+      action: profile ? 'render_mp4' : 'select_mp4_profile',
+      parameters: {
+        resolution: '1920x1080',
+        profile: profile ? mp4ProfileLabel(profile, getLanguage()) : 'pending_user_choice',
+        fps: profile?.fps ?? 'pending_user_choice',
+      },
       depends_on: ['motion-plan'].filter((id) => steps.some((step) => step.id === id)).concat(steps.some((step) => step.id === 'motion-plan') ? [] : ['planner']),
-      status: 'Running',
+      status: profile ? 'Running' : 'Waiting',
       result: { encoder: 'FFmpeg', mode: 'page-by-page animated frames' },
     });
   }
@@ -1196,13 +1511,17 @@ Use this shape for each page:
     : 'If the user did not specify a page count, choose the smallest number of complete pages that satisfies the request.';
   const motionPrompt = intent.wantsAnimation
     ? `The user requested animation. Each page must have visible motion in normal preview and deterministic export support:
-- Define a renderAtTime(seconds) function or equivalent deterministic update path.
+- Define renderAtTime(seconds) and render the full frame from absolute time, not accumulated deltas.
+- Assign window.renderAtTime = renderAtTime.
 - Listen for window event "seehtml:export-frame" and render from event.detail.time.
+- Also read window.__SEEHTML_EXPORT_TIME__ when present.
 - Also support normal requestAnimationFrame preview.
-- Avoid relying only on real elapsed wall-clock time, because MP4 export captures frames programmatically.`
+- Avoid relying only on real elapsed wall-clock time, random drift, network assets, or async state, because MP4 export captures frames programmatically.`
     : 'Do not add heavy animation unless the user requested it.';
   const videoPrompt = intent.wantsVideoExport
-    ? 'After this HTML is generated, the app will queue a background 1080p/30fps MP4 render only because the user explicitly requested MP4. Make the animation loop cleanly within each page duration.'
+    ? intent.mp4ProfileId
+      ? `After this HTML is generated, the app will queue a background 1080p/${getMp4ExportProfile(intent.mp4ProfileId).fps}fps MP4 render only because the user explicitly requested MP4. Make the animation loop cleanly within each page duration.`
+      : 'After this HTML is generated, the app will ask the user to choose a Fast, Standard, or Quality MP4 export version before rendering. Make the animation loop cleanly within each page duration.'
     : '';
 
   return `${base}
@@ -1257,10 +1576,12 @@ async function buildImagePrompt(
     ? `Create exactly ${intent.requestedPages} pages using exactly ${intent.requestedPages} top-level <section class="slide" data-slide="..."> elements. Do not create extra hidden, blank, duplicate, cover, appendix, or decorative sections that could be counted as pages.`
     : 'Choose the smallest complete page count that satisfies the request.';
   const motionPrompt = intent.wantsAnimation
-    ? `Each page must include visible animation and deterministic export support. Listen for "seehtml:export-frame" and render from event.detail.time; also support normal requestAnimationFrame preview.`
+    ? `Each page must include visible animation and deterministic export support. Define renderAtTime(seconds), assign window.renderAtTime, listen for "seehtml:export-frame", render from event.detail.time or window.__SEEHTML_EXPORT_TIME__, and keep normal requestAnimationFrame preview.`
     : 'Do not add heavy animation unless the user requested it.';
   const videoPrompt = intent.wantsVideoExport
-    ? 'After this HTML is generated, the app will queue a background 1080p/30fps MP4 render only because the user explicitly requested MP4, so animation must be frame-seekable and loop cleanly.'
+    ? intent.mp4ProfileId
+      ? `After this HTML is generated, the app will queue a background 1080p/${getMp4ExportProfile(intent.mp4ProfileId).fps}fps MP4 render only because the user explicitly requested MP4, so animation must be frame-seekable and loop cleanly.`
+      : 'After this HTML is generated, the app will ask the user to choose a Fast, Standard, or Quality MP4 export version before rendering, so animation must be frame-seekable and loop cleanly.'
     : '';
   const fallbackTask = imageCount > 1
     ? 'Analyze these reference images together and create a complete responsive HTML page that follows their layout, content hierarchy, visual style, and common intent.'
@@ -1335,8 +1656,92 @@ function inferSlideCount(rest: string, params: Record<string, unknown>): number 
 }
 
 function normalizeExportFormat(rest: string, params: Record<string, unknown>): string {
-  if (typeof params.format === 'string' && params.format.trim()) return params.format.toLowerCase();
-  return (rest.split(/\s+/)[0] || 'pptx').toLowerCase();
+  const raw = typeof params.format === 'string' && params.format.trim()
+    ? params.format
+    : (rest.split(/\s+/)[0] || 'pptx');
+  const normalized = raw.toLowerCase();
+  if (['ppt', 'powerpoint', 'presentation'].includes(normalized)) return 'pptx';
+  if (['mp4', 'video', 'movie'].includes(normalized)) return 'video';
+  if (['md', 'markdown'].includes(normalized)) return 'markdown';
+  return normalized;
+}
+
+function normalizeMp4ExportProfileId(rest: string, params: Record<string, unknown>): Mp4ExportProfileId | null {
+  const explicit = toMp4ExportProfileId(params.profileId);
+  if (explicit) return explicit;
+
+  const rawProfile = [params.profile, params.quality, params.mode, params.fps, rest]
+    .filter((value) => value !== undefined && value !== null)
+    .map(String)
+    .join(' ');
+  const fromText = inferMp4ExportProfileId(rawProfile);
+  if (fromText) return fromText;
+
+  const fps = Number(params.fps);
+  if (fps === 12) return 'fast';
+  if (fps === 15) return 'standard';
+  if (fps === 30) return 'quality';
+  return null;
+}
+
+function startBackgroundDocumentExport({
+  html,
+  format,
+  outputPath,
+  projectPath,
+}: {
+  html: string;
+  format: string;
+  outputPath: string;
+  projectPath: string;
+}) {
+  const preview = usePreviewStore.getState();
+  preview.setRenderStatus({
+    state: 'queued',
+    message: t('export.documentQueued'),
+    outputPath,
+  });
+
+  void (async () => {
+    preview.setRenderStatus({
+      state: 'running',
+      message: backgroundExportRunningMessage(format),
+      outputPath,
+    });
+
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const result = await withTimeout(invoke('export_document', {
+        html,
+        format,
+        theme: null,
+        outputPath,
+      }), REQUEST_TIMEOUT_MS, t('chat.timeout'));
+      notifyProjectFilesChanged(projectPath);
+      const exportedPath = extractPath(result) || outputPath;
+      preview.setRenderStatus({
+        state: 'done',
+        message: `${t('chat.exported')} ${exportedPath}`.trim(),
+        outputPath: exportedPath,
+      });
+    } catch (error) {
+      preview.setRenderStatus({
+        state: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        outputPath,
+      });
+    }
+  })();
+}
+
+function backgroundExportMessage(format: string, outputPath: string): string {
+  return `${backgroundExportRunningMessage(format)}\n${t('project.savedTo')}\n${outputPath}`;
+}
+
+function backgroundExportRunningMessage(format: string): string {
+  if (format === 'pptx') return t('export.pptBackgroundRunning');
+  if (format === 'markdown' || format === 'md') return t('export.markdownBackgroundRunning');
+  return t('export.documentBackgroundRunning');
 }
 
 function normalizeCommandParams(cmd: string, rest: string, params: Record<string, unknown>): Record<string, unknown> {

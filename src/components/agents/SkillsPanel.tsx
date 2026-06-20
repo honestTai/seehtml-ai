@@ -25,6 +25,12 @@ const skills: Skill[] = [
     naturalPrompt: '使用 Motion HTML Skill 生成一个高质量动效 HTML：',
   },
   {
+    id: 'canvas-video-quality', name: 'Canvas Video Skill', emoji: '🎞️',
+    description: 'Built-in HTML5 Canvas video skill for deterministic timelines, frame-seekable renderAtTime, and MP4-ready export.',
+    tools: ['html.skill.canvas_video', 'html.quality_gate', 'preview.render_mp4'],
+    naturalPrompt: '使用 Canvas Video Skill 生成一个可导出 MP4 的 HTML5 Canvas 动画：',
+  },
+  {
     id: 'landing-html-quality', name: 'Landing HTML Skill', emoji: '🌐',
     description: 'Built-in HTML quality skill for landing pages and product pages with responsive layout, strong hierarchy, and polished copy.',
     tools: ['html.skill.landing_html', 'html.quality_gate'],

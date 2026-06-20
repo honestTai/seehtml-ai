@@ -1,4 +1,10 @@
 import { create } from 'zustand';
+import { getLanguage, t } from '../lib/i18n';
+import {
+  getMp4ExportProfile,
+  mp4ProfileOptionLabel,
+  type Mp4ExportProfileId,
+} from '../lib/mp4ExportProfiles';
 
 export type PreviewKind = 'html' | 'video' | 'pdf' | 'markdown' | 'image';
 export type PreviewSource = 'file' | 'generated';
@@ -18,6 +24,8 @@ export interface PreviewRenderRequest {
   type: 'mp4';
   pageCount?: number;
   reason: string;
+  profileId: Mp4ExportProfileId;
+  frameRate: number;
 }
 
 export interface PreviewRenderStatus {
@@ -35,14 +43,22 @@ interface PreviewState {
   error: string | null;
   openFile: (path: string, name?: string) => Promise<PreviewDocument | null>;
   setGeneratedHtml: (html: string, name?: string) => void;
-  requestRender: (request: Omit<PreviewRenderRequest, 'id'>) => void;
+  requestRender: (request: PreviewRenderInput) => void;
   clearRenderRequest: (id?: string) => void;
   setRenderStatus: (status: Omit<PreviewRenderStatus, 'updatedAt'> | null) => void;
   clear: () => void;
 }
 
+type PreviewRenderInput =
+  Omit<PreviewRenderRequest, 'id' | 'profileId' | 'frameRate'>
+  & Partial<Pick<PreviewRenderRequest, 'profileId' | 'frameRate'>>;
+
 const textPreviewKinds = new Set<PreviewKind>(['html', 'markdown']);
 const inlineBinaryPreviewKinds = new Set<PreviewKind>(['image', 'pdf']);
+const htmlExtensions = new Set(['html', 'htm', 'xhtml']);
+const videoExtensions = new Set(['mp4', 'webm', 'ogg', 'mov', 'm4v']);
+const markdownExtensions = new Set(['md', 'markdown']);
+const imageExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
 
 export const PREVIEWABLE_EXTENSIONS = [
   'html', 'htm', 'xhtml',
@@ -54,11 +70,11 @@ export const PREVIEWABLE_EXTENSIONS = [
 
 export function getPreviewKind(name: string): PreviewKind | null {
   const ext = name.split('.').pop()?.toLowerCase() || '';
-  if (['html', 'htm', 'xhtml'].includes(ext)) return 'html';
-  if (['mp4', 'webm', 'ogg', 'mov', 'm4v'].includes(ext)) return 'video';
+  if (htmlExtensions.has(ext)) return 'html';
+  if (videoExtensions.has(ext)) return 'video';
   if (ext === 'pdf') return 'pdf';
-  if (['md', 'markdown'].includes(ext)) return 'markdown';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) return 'image';
+  if (markdownExtensions.has(ext)) return 'markdown';
+  if (imageExtensions.has(ext)) return 'image';
   return null;
 }
 
@@ -132,11 +148,18 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   },
 
   requestRender: (request) => {
+    const profile = getMp4ExportProfile(request.profileId);
+    const frameRate = request.frameRate || profile.fps;
     set({
-      renderRequest: { ...request, id: crypto.randomUUID() },
+      renderRequest: {
+        ...request,
+        profileId: profile.id,
+        frameRate,
+        id: crypto.randomUUID(),
+      },
       renderStatus: {
         state: 'queued',
-        message: 'MP4 已加入后台渲染队列',
+        message: `${t('export.mp4Queued')} · ${mp4ProfileOptionLabel(profile, getLanguage())}`,
         updatedAt: new Date().toISOString(),
       },
     });

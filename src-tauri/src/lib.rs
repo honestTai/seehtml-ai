@@ -53,12 +53,17 @@ pub fn run() {
 
     let orchestrator = Arc::new(Mutex::new(orchestrator));
     let orch_for_dispatcher = orchestrator.clone();
+    let ai_config_for_dispatcher = ai_config.clone();
 
     // Create dispatcher that connects AgentLoop to Orchestrator
     // When LLM calls a tool, this dispatcher executes it via the real agents
     let dispatcher: ToolDispatcher = Arc::new(
-        move |agent_name: &str, action: &str, params: serde_json::Value| {
+        move |agent_name: &str,
+              action: &str,
+              params: serde_json::Value,
+              runtime_context: AgentRuntimeContext| {
             let orch = orch_for_dispatcher.clone();
+            let ai_config = ai_config_for_dispatcher.clone();
             let agent_name = agent_name.to_string();
             let action = action.to_string();
             Box::pin(async move {
@@ -68,7 +73,8 @@ pub fn run() {
                         agent: agent_name.clone(),
                         message: "Unknown agent".into(),
                     })?;
-                let context = AgentContext::default();
+                let mut context = AgentContext::from(runtime_context);
+                context.config = Some(ai_config);
                 orch.dispatch(&agent_id, &action, &params, &context).await
             })
         },

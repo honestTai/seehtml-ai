@@ -33,6 +33,14 @@ export const HTML_SKILLS: HtmlSkill[] = [
     purposeEn: 'For particles, motion, Canvas, and video-recordable HTML pages.',
   },
   {
+    id: 'canvas-video',
+    name: 'Canvas Video',
+    labelZh: 'Canvas Video Skill',
+    labelEn: 'Canvas Video Skill',
+    purposeZh: '用于 HTML5 Canvas 视频、长时间循环动画、片头、宣传短片和 MP4 导出。',
+    purposeEn: 'For HTML5 Canvas videos, long looping animations, intros, promo clips, and MP4 export.',
+  },
+  {
     id: 'landing-html',
     name: 'Landing HTML',
     labelZh: 'Landing HTML Skill',
@@ -53,6 +61,9 @@ export const HTML_SKILLS: HtmlSkill[] = [
 export function selectHtmlSkill(input: string, mode: 'create' | 'edit' | 'image'): HtmlSkill {
   if (mode === 'edit') return skillById('html-refactor');
   const text = input.toLowerCase();
+  if (/(mp4|video|movie|render|record|export|promo|intro|outro|trailer|canvas video|视频|短片|宣传片|片头|片尾|录制|导出|渲染|一分钟|1\s*分钟|60\s*秒|60s)/i.test(text)) {
+    return skillById('canvas-video');
+  }
   if (/(particle|canvas|webgl|three|animation|animate|motion|video|mp4|动效|动画|粒子|星河|炫酷|自动动|转为mp4)/i.test(text)) {
     return skillById('motion-html');
   }
@@ -104,6 +115,24 @@ Motion HTML requirements:
 - Keep a normal requestAnimationFrame preview path for live viewing, but make the render function accept a time value such as renderAtTime(seconds).`;
   }
 
+  if (skill.id === 'canvas-video') {
+    return `${shared}
+
+Canvas Video requirements:
+- Build one self-contained HTML5 Canvas animation with inline JavaScript; avoid external media, CDN scripts, and image dependencies unless the user supplied assets.
+- Use a stable 16:9 stage designed for 1920x1080 export, then scale it responsively to fit the iframe preview without changing the logical coordinate system.
+- Define an explicit duration using window.__SEEHTML_EXPORT_DURATION__ and a DURATION constant. If the user gave a duration, honor it exactly within the app export limit.
+- Make motion deterministic and frame-seekable: implement renderAtTime(seconds), assign window.renderAtTime = renderAtTime, and render the full frame from absolute time rather than accumulated deltas.
+- Listen for window event "seehtml:export-frame" and render from event.detail.time; also read window.__SEEHTML_EXPORT_TIME__ when present.
+- Use requestAnimationFrame only for live preview timing. Exported frames must not depend on wall-clock time, random drift, network loading, or hidden async state.
+- Use seeded randomness or precomputed particles so frame N is reproducible every time. Do not mutate particle state in a way that makes seeking backward incorrect.
+- Structure longer videos as a small timeline of scenes/beats with easing helpers, camera movement, text beats, and a clean loop or intentional ending.
+- The first frame must look deliberate, not blank; the final frame should either loop cleanly to the first frame or resolve to a stable end card.
+- Keep per-frame work predictable: reuse arrays, avoid layout reads in the render loop, cap particle counts, and draw only what is visible.
+- Include a minimal overlay label only when useful; it must not cover the primary animation or export-critical content.
+- Respect prefers-reduced-motion in preview, but keep deterministic export support intact.`;
+  }
+
   if (skill.id === 'html-refactor') {
     return `${shared}
 
@@ -121,10 +150,10 @@ Landing HTML requirements:
 - Make the design feel complete on desktop and mobile.`;
 }
 
-export function validateHtmlQuality(html: string, lang: Lang): HtmlQualityCheck[] {
+export function validateHtmlQuality(html: string, lang: Lang, skill?: HtmlSkill): HtmlQualityCheck[] {
   const lower = html.toLowerCase();
   const hasMotion = /requestanimationframe|<canvas|animation:|@keyframes/.test(lower);
-  return [
+  const checks = [
     { id: 'doctype', label: lang === 'zh' ? '完整 HTML 文档' : 'Complete HTML document', passed: /<!doctype html/i.test(html) && /<html[\s>]/i.test(html) },
     { id: 'viewport', label: lang === 'zh' ? '移动端 viewport' : 'Mobile viewport', passed: /<meta[^>]+name=["']viewport["']/i.test(html) },
     { id: 'title', label: lang === 'zh' ? '页面标题' : 'Page title', passed: /<title[^>]*>[\s\S]+?<\/title>/i.test(html) },
@@ -133,6 +162,14 @@ export function validateHtmlQuality(html: string, lang: Lang): HtmlQualityCheck[
     { id: 'responsive', label: lang === 'zh' ? '响应式约束' : 'Responsive constraints', passed: /(@media|clamp\(|min\(|max\(|aspect-ratio|vh|vw|rem)/i.test(html) },
     { id: 'motion', label: lang === 'zh' ? '动效性能约束' : 'Motion performance', passed: !hasMotion || /requestanimationframe|prefers-reduced-motion/i.test(lower) },
   ];
+  if (skill?.id === 'canvas-video') {
+    checks.push(
+      { id: 'canvas', label: lang === 'zh' ? 'Canvas 舞台' : 'Canvas stage', passed: /<canvas[\s>]/i.test(html) },
+      { id: 'duration', label: lang === 'zh' ? '显式时长' : 'Explicit duration', passed: /__SEEHTML_EXPORT_DURATION__|\bDURATION\b/i.test(html) },
+      { id: 'seekable', label: lang === 'zh' ? '逐帧可寻址' : 'Frame-seekable render', passed: /renderAtTime|seehtml:export-frame|__SEEHTML_EXPORT_TIME__/i.test(html) },
+    );
+  }
+  return checks;
 }
 
 export function summarizeHtmlQuality(checks: HtmlQualityCheck[], skill: HtmlSkill | undefined, lang: Lang): string {

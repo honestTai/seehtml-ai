@@ -1,12 +1,12 @@
 import React, { useEffect } from 'react';
 import { AppShell } from './components/layout/AppShell';
+import { ActivityRail } from './components/layout/ActivityRail';
 import { Sidebar } from './components/layout/Sidebar';
 import { EditorPanel } from './components/editor/EditorPanel';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { StatusBar } from './components/layout/StatusBar';
 import { CommandPalette } from './components/chat/CommandPalette';
 import { useUIStore } from './stores/uiStore';
-import { useChatStore } from './stores/chatStore';
 
 export default function App() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -14,11 +14,14 @@ export default function App() {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+      const key = e.key.toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && key === "k") {
         e.preventDefault();
         useUIStore.getState().toggleCommandPalette();
+        return;
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === "b") {
+      if (isEditableTarget(e.target)) return;
+      if ((e.metaKey || e.ctrlKey) && key === "b") {
         e.preventDefault();
         useUIStore.getState().toggleSidebar();
       }
@@ -28,16 +31,24 @@ export default function App() {
   }, []);
 
   return (
-    <div className="h-screen flex flex-col bg-[var(--color-bg-primary)]">
+    <div className="h-screen flex flex-col bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
+      <a href="#workspace-main" className="skip-link">Skip to Workspace</a>
       <AppShell>
+        <ActivityRail />
         {sidebarOpen && <Sidebar />}
-        <main className="flex min-w-0 flex-1 overflow-hidden max-lg:flex-col">
-          <ChatPanel />
+        <main id="workspace-main" className="flex min-w-0 flex-1 overflow-hidden max-xl:flex-col">
           <EditorPanel />
+          <ChatPanel />
         </main>
       </AppShell>
       <StatusBar />
       {commandPaletteOpen && <CommandPalette />}
     </div>
   );
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select';
 }

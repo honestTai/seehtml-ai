@@ -43,6 +43,22 @@ export interface ChatMessage {
   timestamp: string;
   workflow?: WorkflowStep[];
   toolEvents?: AgentToolEvent[];
+  clarification?: ClarificationPrompt;
+}
+
+export interface ClarificationPrompt {
+  question: string;
+  options: ClarificationOption[];
+  originalRequest?: string;
+}
+
+export interface ClarificationOption {
+  label: string;
+  description?: string;
+  recommended?: boolean;
+  reply?: string;
+  command?: string;
+  params?: unknown;
 }
 
 export type ProcessingStepStatus = "pending" | "active" | "done" | "error";

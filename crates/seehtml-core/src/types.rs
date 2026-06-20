@@ -364,6 +364,25 @@ pub struct LlmMessage {
     pub name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySnippet {
+    pub key: String,
+    pub value: String,
+    pub source: Option<String>,
+}
+
+/// Runtime context supplied by the UI for one agent turn.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentRuntimeContext {
+    pub session_id: Option<String>,
+    pub project_dir: Option<PathBuf>,
+    pub current_file: Option<PathBuf>,
+    pub current_document: Option<Document>,
+    pub selected_text: Option<String>,
+    pub memory_snippets: Vec<MemorySnippet>,
+    pub previous_results: HashMap<String, serde_json::Value>,
+}
+
 /// Request for the agent loop
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLoopRequest {
@@ -371,6 +390,8 @@ pub struct AgentLoopRequest {
     pub tools: Vec<ToolDefinition>,
     pub system_prompt: Option<String>,
     pub max_iterations: u32,
+    #[serde(default)]
+    pub runtime_context: AgentRuntimeContext,
 }
 
 /// FlowMark-style plan produced before the executable agent loop.

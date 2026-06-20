@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, FileDown, FileText, ImageDown, Video } from 'lucide-react';
 import { toPng } from 'html-to-image';
 import { useI18n } from '../../lib/i18n';
@@ -6,6 +6,15 @@ import { splitHtmlPages } from '../../lib/htmlPages';
 import { notifyProjectFilesChanged, projectExportDir, projectExportPath, projectFramesDir } from '../../lib/projectPaths';
 import { usePreviewStore } from '../../stores/previewStore';
 import { useUIStore } from '../../stores/uiStore';
+import {
+  DEFAULT_MP4_EXPORT_PROFILE_ID,
+  MP4_EXPORT_PROFILES,
+  getMp4ExportProfile,
+  mp4ProfileFileName,
+  mp4ProfileOptionLabel,
+  mp4ProfileShortLabel,
+  type Mp4ExportProfileId,
+} from '../../lib/mp4ExportProfiles';
 
 interface Props {
   htmlContent: string;
@@ -28,7 +37,7 @@ export function HtmlPreview({
   backgroundOnly = false,
   processRenderRequests = true,
 }: Props) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const exportFrameRef = useRef<HTMLIFrameElement>(null);
   const handledRenderRequests = useRef<Set<string>>(new Set());
   const renderRequest = usePreviewStore((s) => s.renderRequest);
@@ -38,41 +47,48 @@ export function HtmlPreview({
   const [capturing, setCapturing] = useState(false);
   const [exporting, setExporting] = useState<string | null>(null);
   const [exportStatus, setExportStatus] = useState('');
+  const [selectedMp4ProfileId, setSelectedMp4ProfileId] = useState<Mp4ExportProfileId>(DEFAULT_MP4_EXPORT_PROFILE_ID);
 
-  const renderWholeDocument = hasRealTimeline(htmlContent);
-  const preparedHtml = withBaseHref(htmlContent, baseHref);
-  const slides = renderWholeDocument
-    ? [{ id: 'document', title: 'HTML', html: preparedHtml }]
-    : sections && sections.length > 0
-    ? sections.map((section) => ({ id: section.id, title: section.heading || section.id, html: section.content }))
-    : splitHtmlPages(htmlContent, { baseHref });
+  const renderWholeDocument = useMemo(() => hasRealTimeline(htmlContent), [htmlContent]);
+  const preparedHtml = useMemo(() => withBaseHref(htmlContent, baseHref), [baseHref, htmlContent]);
+  const slides = useMemo(() => {
+    if (renderWholeDocument) return [{ id: 'document', title: 'HTML', html: preparedHtml }];
+    if (sections && sections.length > 0) {
+      return sections.map((section) => ({ id: section.id, title: section.heading || section.id, html: section.content }));
+    }
+    return splitHtmlPages(htmlContent, { baseHref });
+  }, [baseHref, htmlContent, preparedHtml, renderWholeDocument, sections]);
   const safeSlide = Math.min(currentSlide, Math.max(slides.length - 1, 0));
   const hasMultiplePages = !renderWholeDocument && slides.length > 1;
   const currentContent = renderWholeDocument || slides.length <= 1
     ? preparedHtml
     : slides[safeSlide]?.html || preparedHtml;
+  const visibleThumbnailIndexes = useMemo(
+    () => visibleSlideIndexes(slides.length, safeSlide),
+    [safeSlide, slides.length],
+  );
 
   useEffect(() => {
     if (currentSlide !== safeSlide) onSlideChange(safeSlide);
   }, [currentSlide, safeSlide, onSlideChange]);
 
-  const publishExportStatus = (
+  const publishExportStatus = useCallback((
     message: string,
     state: 'running' | 'done' | 'error' = 'running',
     outputPath?: string,
   ) => {
     setExportStatus(message);
     setRenderStatus({ state, message, outputPath });
-  };
+  }, [setRenderStatus]);
 
   const handleCapture = async () => {
     if (capturing || exporting) return;
     if (!projectPath) {
-      setExportStatus(t('project.required'));
+      publishExportStatus(t('project.required'), 'error');
       return;
     }
     setCapturing(true);
-    setExportStatus(t('export.renderingPage'));
+    publishExportStatus(t('export.renderingPage'));
     try {
       const dataUrl = await capturePagePng(currentContent);
       onCapture(dataUrl, safeSlide);
@@ -83,9 +99,9 @@ export function HtmlPreview({
         outputDir: projectExportDir(projectPath),
       });
       notifyProjectFilesChanged(projectPath);
-      setExportStatus(`${t('chat.exported')} ${path}`);
+      publishExportStatus(`${t('chat.exported')} ${path}`, 'done', path);
     } catch (e) {
-      setExportStatus(e instanceof Error ? e.message : String(e));
+      publishExportStatus(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       setCapturing(false);
     }
@@ -94,11 +110,11 @@ export function HtmlPreview({
   const exportDocument = async (format: 'pptx' | 'markdown') => {
     if (exporting) return;
     if (!projectPath) {
-      setExportStatus(t('project.required'));
+      publishExportStatus(t('project.required'), 'error');
       return;
     }
     setExporting(format);
-    setExportStatus(t('export.exportingByPage'));
+    publishExportStatus(format === 'pptx' ? t('export.pptBackgroundRunning') : t('export.markdownBackgroundRunning'));
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const ext = format === 'markdown' ? 'md' : format;
@@ -110,26 +126,29 @@ export function HtmlPreview({
         outputPath,
       });
       notifyProjectFilesChanged(projectPath);
-      setExportStatus(`${t('chat.exported')} ${result?.output_path || ''}`.trim());
+      const output = result?.output_path || outputPath;
+      publishExportStatus(`${t('chat.exported')} ${output}`.trim(), 'done', output);
     } catch (e) {
-      setExportStatus(e instanceof Error ? e.message : String(e));
+      publishExportStatus(e instanceof Error ? e.message : String(e), 'error');
     } finally {
       setExporting(null);
     }
   };
 
-  const exportAnimatedMp4 = async () => {
+  const exportAnimatedMp4 = async (profileId: Mp4ExportProfileId = selectedMp4ProfileId) => {
     if (exporting) return;
     if (!projectPath) {
       publishExportStatus(t('project.required'), 'error');
       return;
     }
     const exportPages = buildMp4ExportPages(htmlContent, slides, baseHref);
-    const fps = 30;
+    const profile = getMp4ExportProfile(profileId);
+    const fps = profile.fps;
     let frameIndex = 0;
 
+    setSelectedMp4ProfileId(profile.id);
     setExporting('mp4');
-    publishExportStatus(t('export.mp4BackgroundRunning'));
+    publishExportStatus(`${t('export.mp4BackgroundRunning')} · ${mp4ProfileOptionLabel(profile, lang)}`);
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const framesDir = projectFramesDir(projectPath);
@@ -160,10 +179,11 @@ export function HtmlPreview({
         slideCount: frameIndex,
         frameRate: fps,
         framesDir,
-        outputPath: projectExportPath(projectPath, 'presentation.mp4'),
+        outputPath: projectExportPath(projectPath, mp4ProfileFileName(profile)),
       });
       notifyProjectFilesChanged(projectPath);
       publishExportStatus(`${t('chat.exported')} ${outputPath}`, 'done', outputPath);
+      await openExportedMp4(outputPath);
     } catch (e) {
       publishExportStatus(e instanceof Error ? e.message : String(e), 'error');
     } finally {
@@ -177,8 +197,17 @@ export function HtmlPreview({
     if (handledRenderRequests.current.has(renderRequest.id)) return;
     handledRenderRequests.current.add(renderRequest.id);
     clearRenderRequest(renderRequest.id);
-    void exportAnimatedMp4();
+    void exportAnimatedMp4(renderRequest.profileId);
   }, [renderRequest, exporting, capturing, processRenderRequests, htmlContent]);
+
+  const openExportedMp4 = async (path: string) => {
+    const preview = usePreviewStore.getState();
+    const doc = await preview.openFile(path, fileName(path));
+    if (!doc) return;
+    const ui = useUIStore.getState();
+    ui.setWorkspaceSelectionPath(path);
+    ui.setWorkspaceMode('mp4');
+  };
 
   const capturePagePng = async (pageHtml: string) => {
     await loadExportPage(pageHtml);
@@ -304,7 +333,7 @@ export function HtmlPreview({
   }
 
   return (
-    <div className="relative h-full min-h-0 overflow-hidden bg-[#f2f4f7]">
+    <div className="relative h-full min-h-0 overflow-hidden bg-[var(--color-bg-primary)] p-3">
       <iframe
         ref={exportFrameRef}
         title="Export Renderer"
@@ -312,52 +341,76 @@ export function HtmlPreview({
         className="pointer-events-none fixed -left-[10000px] top-0 h-[1080px] w-[1920px] border-0 opacity-0"
       />
 
-      <iframe
-        srcDoc={currentContent}
-        className="h-full w-full border-0 bg-white"
-        sandbox="allow-scripts allow-same-origin"
-        title="HTML Preview"
-      />
+      <div className="h-full overflow-hidden rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-white shadow-sm">
+        <iframe
+          srcDoc={currentContent}
+          className="h-full w-full border-0 bg-white"
+          sandbox="allow-scripts allow-same-origin"
+          title="HTML Preview"
+        />
+      </div>
 
-      <div className="absolute right-3 top-3 flex items-center gap-1 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-white/92 p-1 shadow-sm backdrop-blur">
+      <div className="absolute right-5 top-5 flex items-center gap-1 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-white/94 p-1 shadow-sm backdrop-blur">
         {hasMultiplePages && (
           <div className="mr-1 flex items-center gap-0.5 border-r border-[var(--color-border)] pr-1">
           <button
+            type="button"
             onClick={() => onSlideChange(Math.max(0, safeSlide - 1))}
             disabled={safeSlide === 0}
               className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] disabled:opacity-30"
               title="Previous page"
+              aria-label="Previous page"
           ><ChevronLeft size={15} /></button>
             <span className="px-1.5 text-[11px] font-medium text-[var(--color-text-secondary)]">
             {t('export.page')} {safeSlide + 1} / {Math.max(slides.length, 1)}
           </span>
           <button
+            type="button"
             onClick={() => onSlideChange(Math.min(slides.length - 1, safeSlide + 1))}
             disabled={safeSlide >= slides.length - 1}
               className="flex h-7 w-7 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] disabled:opacity-30"
               title="Next page"
+              aria-label="Next page"
           ><ChevronRight size={15} /></button>
         </div>
         )}
         <ToolButton icon={<ImageDown size={14} />} onClick={handleCapture} disabled={capturing || Boolean(exporting)} label={capturing ? t('export.rendering') : t('export.png')} shortLabel="PNG" />
         <ToolButton icon={<FileDown size={14} />} onClick={() => exportDocument('pptx')} disabled={Boolean(exporting)} label={exporting === 'pptx' ? t('export.exporting') : t('export.pptx')} shortLabel="PPT" />
         <ToolButton icon={<FileText size={14} />} onClick={() => exportDocument('markdown')} disabled={Boolean(exporting)} label={exporting === 'markdown' ? t('export.exporting') : t('export.markdown')} shortLabel="MD" />
-        <ToolButton icon={<Video size={14} />} primary onClick={exportAnimatedMp4} disabled={Boolean(exporting)} label={exporting === 'mp4' ? t('export.encodingMp4') : t('export.video')} shortLabel="MP4" />
+        <Mp4ProfileSelector
+          value={selectedMp4ProfileId}
+          disabled={Boolean(exporting)}
+          onChange={setSelectedMp4ProfileId}
+          lang={lang}
+        />
+        <ToolButton
+          icon={<Video size={14} />}
+          primary
+          onClick={() => exportAnimatedMp4()}
+          disabled={Boolean(exporting)}
+          label={exporting === 'mp4' ? t('export.encodingMp4') : `${t('export.video')} · ${mp4ProfileOptionLabel(getMp4ExportProfile(selectedMp4ProfileId), lang)}`}
+          shortLabel="MP4"
+        />
       </div>
 
       {exportStatus && (
-        <div className={`absolute inset-x-3 ${hasMultiplePages ? 'bottom-[92px]' : 'bottom-3'} truncate rounded-[var(--radius-control)] border border-[var(--color-border)] bg-white/94 px-3 py-2 text-[11px] text-[var(--color-text-secondary)] shadow-sm backdrop-blur`}>
+        <div className={`absolute inset-x-5 ${hasMultiplePages ? 'bottom-[92px]' : 'bottom-5'} truncate rounded-[var(--radius-control)] border border-[var(--color-border)] bg-white/94 px-3 py-2 text-[11px] text-[var(--color-text-secondary)] shadow-sm backdrop-blur`}>
           {exportStatus}
       </div>
       )}
 
       {hasMultiplePages && (
-        <div className="absolute inset-x-3 bottom-3 flex gap-1 overflow-x-auto rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-white/92 px-2 py-2 shadow-sm backdrop-blur">
-          {slides.map((slide, i) => (
+        <div className="absolute inset-x-5 bottom-5 flex gap-1 overflow-x-auto rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-white/92 px-2 py-2 shadow-sm backdrop-blur">
+          {visibleThumbnailIndexes.map((i) => {
+            const slide = slides[i];
+            return (
             <button
               key={slide.id}
+              type="button"
               onClick={() => onSlideChange(i)}
-              className={`h-14 w-24 flex-shrink-0 overflow-hidden rounded-lg border-2 transition-colors ${
+              aria-label={`${t('export.page')} ${i + 1}: ${slide.title}`}
+              aria-current={i === safeSlide ? 'page' : undefined}
+              className={`h-14 w-24 flex-shrink-0 overflow-hidden rounded-[var(--radius-control)] border transition-colors ${
                 i === safeSlide ? 'border-[var(--color-accent)]' : 'border-[var(--color-border)] hover:border-[var(--color-text-secondary)]'
               }`}
               title={slide.title}
@@ -367,12 +420,52 @@ export function HtmlPreview({
                 className="pointer-events-none h-full w-full border-0"
                 sandbox="allow-scripts allow-same-origin"
                 title={`Slide ${i + 1}`}
+                loading="lazy"
                 style={{ transform: 'scale(0.25)', transformOrigin: '0 0', width: '384px', height: '216px' }}
               />
             </button>
-          ))}
+          );
+          })}
         </div>
       )}
+    </div>
+  );
+}
+
+function Mp4ProfileSelector({
+  value,
+  disabled,
+  onChange,
+  lang,
+}: {
+  value: Mp4ExportProfileId;
+  disabled?: boolean;
+  onChange: (value: Mp4ExportProfileId) => void;
+  lang: 'zh' | 'en';
+}) {
+  return (
+    <div className="mx-0.5 flex h-7 items-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-0.5">
+      {MP4_EXPORT_PROFILES.map((profile) => {
+        const active = profile.id === value;
+        return (
+          <button
+            key={profile.id}
+            type="button"
+            disabled={disabled}
+            onClick={() => onChange(profile.id)}
+            title={mp4ProfileOptionLabel(profile, lang)}
+            aria-label={mp4ProfileOptionLabel(profile, lang)}
+            aria-pressed={active}
+            className={`flex h-6 w-7 items-center justify-center rounded-[calc(var(--radius-control)-2px)] text-[11px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+              active
+                ? 'bg-white text-[var(--color-accent)] shadow-sm'
+                : 'text-[var(--color-text-secondary)] hover:bg-white/70 hover:text-[var(--color-text-primary)]'
+            }`}
+          >
+            {mp4ProfileShortLabel(profile, lang)}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -394,6 +487,7 @@ function ToolButton({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       disabled={disabled}
       title={label}
@@ -410,8 +504,29 @@ function ToolButton({
   );
 }
 
+function visibleSlideIndexes(total: number, current: number, maxVisible = 12): number[] {
+  if (total <= maxVisible) {
+    return Array.from({ length: total }, (_, index) => index);
+  }
+
+  const indexes = new Set<number>([0, total - 1, current]);
+  for (let offset = 1; indexes.size < maxVisible && offset < total; offset += 1) {
+    const before = current - offset;
+    const after = current + offset;
+    if (before > 0) indexes.add(before);
+    if (indexes.size >= maxVisible) break;
+    if (after < total - 1) indexes.add(after);
+  }
+
+  return [...indexes].sort((a, b) => a - b);
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
 }
 
 function buildMp4ExportPages(

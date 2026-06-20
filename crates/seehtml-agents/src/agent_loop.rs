@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 /// Callback type for executing a tool. Returns the tool result as JSON.
 pub type ToolDispatcher = Arc<
-    dyn Fn(&str, &str, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send>>
+    dyn Fn(&str, &str, serde_json::Value, AgentRuntimeContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send>>
     + Send + Sync
 >;
 
@@ -94,7 +94,11 @@ impl AgentLoop {
         ];
 
         match self.call_llm(&messages, &[]).await? {
-            LlmResponse::Text(text) => parse_plan(&text, &request.tools),
+            LlmResponse::Text(text) => {
+                let mut plan = parse_plan(&text, &request.tools)?;
+                enforce_plan_context(&mut plan, request);
+                Ok(plan)
+            }
             LlmResponse::ToolCalls(_) => Err(SeeHtmlError::AiApiError(
                 "Agent planner tried to call tools instead of returning a plan.".into(),
             )),
@@ -131,7 +135,8 @@ impl AgentLoop {
         request: AgentLoopRequest,
     ) -> Result<Vec<LlmMessage>> {
         let mut messages = request.messages;
-        let tools = &request.tools;
+        let tools = request.tools;
+        let mut runtime_context = request.runtime_context;
         let max_iter = request.max_iterations.max(1).min(20);
 
         let system_msg = LlmMessage {
@@ -144,7 +149,7 @@ impl AgentLoop {
         full_messages.append(&mut messages);
 
         for _i in 0..max_iter {
-            let response = self.call_llm(&full_messages, tools).await?;
+            let response = self.call_llm(&full_messages, &tools).await?;
 
             match response {
                 LlmResponse::Text(text) => {
@@ -167,13 +172,14 @@ impl AgentLoop {
                         // EXECUTE the tool via dispatcher (or fall back to fake result)
                         let result = if let Some(ref dispatcher) = self.dispatcher {
                             let (agent_name, action) = parse_tool_name(&tc.name);
-                            match dispatcher(&agent_name, &action, tc.arguments.clone()).await {
+                            match dispatcher(&agent_name, &action, tc.arguments.clone(), runtime_context.clone()).await {
                                 Ok(val) => val,
                                 Err(e) => serde_json::json!({"error": e.to_string()})
                             }
                         } else {
                             serde_json::json!({"status": "ok", "note": "no dispatcher configured"})
                         };
+                        remember_tool_result(&mut runtime_context, tc, &result);
 
                         let result_str = serde_json::to_string(&result).unwrap_or_default();
 
@@ -199,7 +205,8 @@ impl AgentLoop {
         tx: mpsc::Sender<AgentLoopEvent>,
     ) -> Result<()> {
         let mut messages = request.messages;
-        let tools = &request.tools;
+        let tools = request.tools;
+        let mut runtime_context = request.runtime_context;
         let max_iter = request.max_iterations.max(1).min(20);
 
         let system_msg = LlmMessage {
@@ -216,7 +223,7 @@ impl AgentLoop {
                 content: "Analyzing request...".into()
             }).await;
 
-            let response = self.call_llm(&full_messages, tools).await?;
+            let response = self.call_llm(&full_messages, &tools).await?;
 
             match response {
                 LlmResponse::Text(text) => {
@@ -244,13 +251,14 @@ impl AgentLoop {
                         // Real execution via dispatcher
                         let result = if let Some(ref dispatcher) = self.dispatcher {
                             let (agent_name, action) = parse_tool_name(&tc.name);
-                            match dispatcher(&agent_name, &action, tc.arguments.clone()).await {
+                            match dispatcher(&agent_name, &action, tc.arguments.clone(), runtime_context.clone()).await {
                                 Ok(val) => val,
                                 Err(e) => serde_json::json!({"error": e.to_string()})
                             }
                         } else {
                             serde_json::json!({"status": "ok", "note": "no dispatcher"})
                         };
+                        remember_tool_result(&mut runtime_context, tc, &result);
 
                         let tool_result = ToolResult {
                             tool_call_id: tc.id.clone(),
@@ -483,6 +491,20 @@ fn parse_tool_name(full_name: &str) -> (String, String) {
     }
 }
 
+fn remember_tool_result(
+    context: &mut AgentRuntimeContext,
+    tool_call: &ToolCall,
+    result: &serde_json::Value,
+) {
+    context
+        .previous_results
+        .insert(tool_call.id.clone(), result.clone());
+    context.previous_results.insert(
+        format!("{}:{}", tool_call.name, tool_call.id),
+        result.clone(),
+    );
+}
+
 fn planner_system_prompt() -> String {
     r#"You are SeeHTML AI's server-side Agent planner.
 Return compact JSON only. Do not answer the user's task.
@@ -493,7 +515,12 @@ Normal greetings, small talk, and product questions should use no tools.
 For HTML creation/editing, prefer direct final model output unless a registered tool exactly matches a required local action.
 Only select tools when required inputs are present. Never select export/media tools merely because they exist.
 Never select MP4/video/media work unless the user explicitly asks to render, export, generate, convert, or process video/media.
-If the request is vague, especially "make it better", "do a page", "adjust it", or unclear export/edit scope, set needsClarification=true and ask one concise question with 2-5 short options.
+Ask a clarification only when a key decision would materially change the result. If a reasonable default is low-risk, choose it and explain the assumption in routeReason.
+When clarification is needed, ask exactly one concrete question and provide 2-4 mutually exclusive, action-oriented options. Put the recommended option first when one is safest. Each option should include a short impact/tradeoff using " — ", for example "Product landing page (Recommended) — fastest path when the user has a product or offer".
+Avoid generic options such as "more details" or "other"; the UI already lets the user type a custom answer.
+If the request is vague, especially "make it better", "do a page", "adjust it", or unclear export/edit scope, set needsClarification=true and ask one concise question with useful options.
+Under-specified HTML animation requests must ask for details before generating when the user only mentions HTML/animation/duration but omits subject, scenes, visual style, or delivery target.
+For long animation requests such as "1 minute HTML animation", ask which creative route to take and offer specific options like abstract particles, product/brand intro, data visualization story, character/scene short, or looping ambient background.
 
 JSON schema:
 {
@@ -503,7 +530,7 @@ JSON schema:
   "allowedTools": ["exact tool names from the available tool list, or empty array"],
   "needsClarification": true,
   "clarificationQuestion": "one short question, null when not needed",
-  "clarificationOptions": ["2-5 short options"],
+  "clarificationOptions": ["2-4 options, each as Label (Recommended when applicable) — impact/tradeoff"],
   "wantsHtmlOutput": false,
   "wantsPreviewUpdate": false,
   "wantsVideoExport": false,
@@ -554,10 +581,14 @@ fn planner_user_prompt(request: &AgentLoopRequest) -> String {
         .and_then(|message| message.content.as_deref())
         .map(|value| clip(value, 5000))
         .unwrap_or_default();
+    let runtime_context = runtime_context_summary(&request.runtime_context);
 
     format!(
         r#"Base system boundary:
 {base_system}
+
+Runtime context:
+{runtime_context}
 
 Available tools:
 {available_tools}
@@ -567,6 +598,64 @@ Recent conversation:
 
 Latest user request:
 {latest_user}"#
+    )
+}
+
+fn runtime_context_summary(context: &AgentRuntimeContext) -> String {
+    let document = context
+        .current_document
+        .as_ref()
+        .map(|doc| {
+            format!(
+                "loaded title=\"{}\", html_chars={}, sections={}",
+                clip(&doc.title, 120),
+                doc.html_content.chars().count(),
+                doc.sections.len()
+            )
+        })
+        .unwrap_or_else(|| "none".into());
+    let project_dir = context
+        .project_dir
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "none".into());
+    let current_file = context
+        .current_file
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| "none".into());
+    let memories = if context.memory_snippets.is_empty() {
+        "none".into()
+    } else {
+        context
+            .memory_snippets
+            .iter()
+            .take(8)
+            .map(|item| format!("- {}: {}", item.key, clip(&item.value, 240)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let previous_results = if context.previous_results.is_empty() {
+        "none".into()
+    } else {
+        context
+            .previous_results
+            .keys()
+            .take(12)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    format!(
+        r#"sessionId={session_id}
+projectDir={project_dir}
+currentFile={current_file}
+currentDocument={document}
+memory:
+{memories}
+previousResults={previous_results}"#,
+        session_id = context.session_id.as_deref().unwrap_or("none"),
     )
 }
 
@@ -643,6 +732,82 @@ fn parse_plan(content: &str, available_tools: &[ToolDefinition]) -> Result<Agent
         plan.clarification_question = Some("What should I do next?".into());
     }
     Ok(plan)
+}
+
+fn enforce_plan_context(plan: &mut AgentExecutionPlan, request: &AgentLoopRequest) {
+    if plan.allowed_tools.is_empty() || request.runtime_context.current_document.is_some() {
+        return;
+    }
+
+    let needs_document = plan
+        .allowed_tools
+        .iter()
+        .any(|tool| tool_requires_current_document(tool));
+    if !needs_document {
+        return;
+    }
+
+    let zh = latest_user_text(request)
+        .map(contains_cjk)
+        .unwrap_or(false);
+    plan.primary_intent = "clarify".into();
+    plan.task_focus = if zh {
+        "先获取当前 HTML 文档，再继续执行。".into()
+    } else {
+        "Get a current HTML document before continuing.".into()
+    };
+    plan.steps = if zh {
+        vec!["确认当前页面".into(), "打开或生成 HTML 后再执行工具".into()]
+    } else {
+        vec![
+            "Confirm the current page".into(),
+            "Run the tool after an HTML document is available".into(),
+        ]
+    };
+    plan.allowed_tools.clear();
+    plan.needs_clarification = true;
+    plan.clarification_question = Some(if zh {
+        "请先打开或生成一个 HTML 页面，再执行这个操作。".into()
+    } else {
+        "Open or generate an HTML document first, then I can run this operation.".into()
+    });
+    plan.clarification_options = if zh {
+        vec![
+            "打开本地 HTML（推荐） — 基于真实页面继续，最不容易改偏".into(),
+            "先生成一个 HTML — 没有现成页面时从新文档开始".into(),
+        ]
+    } else {
+        vec![
+            "Open a local HTML file (Recommended) — continue from the real page with less risk".into(),
+            "Generate an HTML document first — start from a new document when none exists".into(),
+        ]
+    };
+    plan.wants_preview_update = false;
+    plan.wants_video_export = false;
+    plan.route_reason = if zh {
+        "所选工具需要当前 HTML 文档，但本轮上下文里还没有可用文档。".into()
+    } else {
+        "The selected tool needs the current HTML document, but none is available in this turn.".into()
+    };
+}
+
+fn tool_requires_current_document(tool_name: &str) -> bool {
+    tool_name.starts_with("style_")
+        || tool_name.starts_with("export_")
+        || tool_name.starts_with("publish_")
+}
+
+fn latest_user_text(request: &AgentLoopRequest) -> Option<&str> {
+    request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .and_then(|message| message.content.as_deref())
+}
+
+fn contains_cjk(value: &str) -> bool {
+    value.chars().any(|ch| matches!(ch, '\u{4e00}'..='\u{9fff}'))
 }
 
 fn planned_tools(tools: &[ToolDefinition], plan: &AgentExecutionPlan) -> Vec<ToolDefinition> {

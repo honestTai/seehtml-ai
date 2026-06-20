@@ -182,7 +182,7 @@ export function FileExplorer({ showHeader = false }: { showHeader?: boolean } = 
       if (selected) {
         setProjectPath(selected);
         setWorkspaceSelectionPath(selected);
-        setWorkspaceMode('preview');
+        setWorkspaceMode('files');
         useChatStore.getState().ensureProjectSession(selected);
         await loadRoot(selected);
       }
@@ -197,7 +197,7 @@ export function FileExplorer({ showHeader = false }: { showHeader?: boolean } = 
       if (selected) {
         setProjectPath(selected);
         setWorkspaceSelectionPath(selected);
-        setWorkspaceMode('preview');
+        setWorkspaceMode('files');
         useChatStore.getState().ensureProjectSession(selected);
         await loadRoot(selected);
       }
@@ -239,9 +239,11 @@ export function FileExplorer({ showHeader = false }: { showHeader?: boolean } = 
     setWorkspaceMode('files');
 
     if (expanded.has(node.path)) {
-      const next = new Set(expanded);
-      next.delete(node.path);
-      setExpanded(next);
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        next.delete(node.path);
+        return next;
+      });
       return;
     }
 
@@ -285,9 +287,9 @@ export function FileExplorer({ showHeader = false }: { showHeader?: boolean } = 
     ? buildBreadcrumbs(root.path, activePath, t('project.breadcrumbRoot')).slice(1)
     : [];
   const breadcrumbs = [
+    { label: t('project.folderContents'), path: root?.path },
     { label: t('editor.preview') },
     { label: 'MP4' },
-    { label: t('project.folderContents'), path: root?.path },
     ...pathBreadcrumbs,
   ];
 
@@ -391,23 +393,29 @@ function BreadcrumbBar({
       </nav>
       <div className='flex flex-shrink-0 items-center gap-1.5'>
         <button
+          type='button'
           onClick={onChooseFile}
           title={t('sidebar.openFile')}
+          aria-label={t('sidebar.openFile')}
           className='inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]'
         >
           <FileText size={15} />
         </button>
         <button
+          type='button'
           onClick={onChooseFolder}
           title={t('sidebar.chooseFolder')}
+          aria-label={t('sidebar.chooseFolder')}
           className='inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]'
         >
           <FolderOpen size={15} />
         </button>
         <button
+          type='button'
           onClick={onRefresh}
           disabled={!canRefresh}
           title={t('sidebar.refresh')}
+          aria-label={t('sidebar.refresh')}
           className='inline-flex h-9 w-9 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] hover:bg-[var(--color-border)] disabled:opacity-35'
         >
           <RefreshCw size={15} />
@@ -429,6 +437,7 @@ function NoProjectState({ onCreate, onOpen }: { onCreate: () => void; onOpen: ()
         <div className='text-sm font-semibold text-[var(--color-text-primary)]'>{t('project.noProject')}</div>
         <div className='mt-3 grid gap-2'>
           <button
+            type='button'
             onClick={onCreate}
             className='inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius-control)] bg-[var(--color-accent)] px-3 text-xs font-medium text-white hover:bg-[var(--color-accent-hover)]'
           >
@@ -436,6 +445,7 @@ function NoProjectState({ onCreate, onOpen }: { onCreate: () => void; onOpen: ()
             {t('project.new')}
           </button>
           <button
+            type='button'
             onClick={onOpen}
             className='inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-tertiary)]'
           >
@@ -480,6 +490,7 @@ function TreeNode({
   return (
     <div className='px-1'>
       <button
+        type='button'
         onClick={() => node.is_dir ? onToggle(node) : onOpenFile(node)}
         disabled={!clickable || disabled}
         className={`flex h-8 w-full items-center gap-1.5 rounded-[var(--radius-control)] pr-2 text-left text-xs transition-colors ${

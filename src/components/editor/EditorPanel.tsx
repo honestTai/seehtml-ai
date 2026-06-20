@@ -23,6 +23,7 @@ export function EditorPanel() {
   const htmlDoc = useChatStore((s) => s.htmlDocument);
   const previewDocument = usePreviewStore((s) => s.document);
   const openPreviewFile = usePreviewStore((s) => s.openFile);
+  const renderStatus = usePreviewStore((s) => s.renderStatus);
   const isLoading = usePreviewStore((s) => s.isLoading);
   const error = usePreviewStore((s) => s.error);
   const projectPath = useUIStore((s) => s.projectPath);
@@ -74,7 +75,7 @@ export function EditorPanel() {
       if (!selected) return;
       setProjectPath(selected);
       setWorkspaceSelectionPath(selected);
-      setWorkspaceMode('preview');
+      setWorkspaceMode('files');
       useChatStore.getState().ensureProjectSession(selected);
       notifyProjectFilesChanged(selected);
     } catch {
@@ -89,11 +90,10 @@ export function EditorPanel() {
   const fileBreadcrumbs = workspaceMode === 'files'
     ? selectedPathCrumbs(projectPath, workspaceSelectionPath || projectPath || undefined)
     : [];
-  const breadcrumbItems: WorkspaceBreadcrumbItem[] = [
+  const modeItems: WorkspaceBreadcrumbItem[] = [
+    { label: t('project.fileCrumb'), mode: 'files', path: projectPath || undefined },
     { label: t('preview.htmlPreview'), mode: 'preview' },
     { label: 'MP4', mode: 'mp4' },
-    { label: t('project.fileCrumb'), mode: 'files', path: projectPath || undefined },
-    ...fileBreadcrumbs,
   ];
   const visibleDoc = workspaceMode === 'mp4'
     ? activeDoc?.kind === 'video' ? activeDoc : null
@@ -105,6 +105,7 @@ export function EditorPanel() {
     : null;
 
   useEffect(() => {
+    if (workspaceMode !== 'preview') return;
     const previewPath = previewDocument?.path;
     const needsProjectPreview = Boolean(
       projectPath
@@ -142,7 +143,7 @@ export function EditorPanel() {
     return () => {
       cancelled = true;
     };
-  }, [openPreviewFile, previewDocument, projectPath, setWorkspaceMode, setWorkspaceSelectionPath]);
+  }, [openPreviewFile, previewDocument, projectPath, setWorkspaceMode, setWorkspaceSelectionPath, workspaceMode]);
 
   useEffect(() => {
     setCurrentSlide(0);
@@ -179,7 +180,10 @@ export function EditorPanel() {
       return;
     }
     if (item.mode === 'mp4' && projectPath) {
-      void openProjectDocument(projectExportPath(projectPath, 'presentation.mp4'), 'mp4');
+      const latestMp4Path = renderStatus?.state === 'done' && renderStatus.outputPath
+        ? renderStatus.outputPath
+        : projectExportPath(projectPath, 'presentation-standard.mp4');
+      void openProjectDocument(latestMp4Path, 'mp4');
       return;
     }
     if (item.path) {
@@ -187,13 +191,14 @@ export function EditorPanel() {
     } else if (item.mode === 'files' && projectPath) {
       setWorkspaceSelectionPath(projectPath);
     }
-  }, [openProjectDocument, openProjectHtmlPreview, projectPath, setWorkspaceMode, setWorkspaceSelectionPath]);
+  }, [openProjectDocument, openProjectHtmlPreview, projectPath, renderStatus, setWorkspaceMode, setWorkspaceSelectionPath]);
 
   return (
-    <section className='min-w-[560px] flex-1 overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-bg-secondary)] max-lg:min-w-0 max-lg:flex-1 max-lg:border-l-0'>
+    <section className='min-w-[520px] flex-1 overflow-hidden bg-[var(--color-bg-primary)] max-xl:min-w-0 max-xl:flex-1'>
       <div className='flex h-full min-h-0 flex-col overflow-hidden'>
         <WorkspaceBreadcrumb
-          items={breadcrumbItems}
+          items={modeItems}
+          pathItems={fileBreadcrumbs}
           activeMode={workspaceMode}
           onSelectItem={selectBreadcrumb}
           onChooseFile={chooseFile}
@@ -202,7 +207,7 @@ export function EditorPanel() {
           canRefresh={Boolean(projectPath)}
         />
 
-        <div className='min-h-0 flex-1 bg-[var(--color-bg-secondary)]' data-workspace-mode={workspaceMode}>
+        <div className='min-h-0 flex-1 bg-[var(--color-bg-primary)]' data-workspace-mode={workspaceMode}>
           {backgroundHtmlDoc?.kind === 'html' && (
             <HtmlPreview
               htmlContent={backgroundHtmlDoc.content || ''}
@@ -217,7 +222,7 @@ export function EditorPanel() {
           {workspaceMode === 'files' ? (
             <FileExplorer />
           ) : (
-            <div className='h-full min-h-0 overflow-hidden bg-[var(--color-bg-secondary)]'>
+            <div className='h-full min-h-0 overflow-hidden bg-[var(--color-bg-primary)]'>
                 {isLoading ? (
                   <PreviewState icon={<Loader2 size={20} className='animate-spin' />} title={t('preview.loading')} />
                 ) : error ? (
@@ -363,9 +368,9 @@ function baseHref(url?: string): string | undefined {
 
 function PreviewState({ icon, title, body }: { icon: React.ReactNode; title: string; body?: string }) {
   return (
-    <div className='flex h-full items-center justify-center p-8 text-center'>
+    <div className='flex h-full items-center justify-center bg-[var(--color-bg-secondary)] p-8 text-center'>
       <div className='max-w-sm'>
-        <div className='mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] text-sm font-semibold text-[var(--color-text-secondary)]'>
+        <div className='mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-sm font-semibold text-[var(--color-text-secondary)] shadow-sm'>
           {icon}
         </div>
         <h2 className='text-base font-semibold text-[var(--color-text-primary)]'>{title}</h2>
@@ -377,6 +382,7 @@ function PreviewState({ icon, title, body }: { icon: React.ReactNode; title: str
 
 function WorkspaceBreadcrumb({
   items,
+  pathItems,
   activeMode,
   onSelectItem,
   onChooseFile,
@@ -385,6 +391,7 @@ function WorkspaceBreadcrumb({
   canRefresh,
 }: {
   items: WorkspaceBreadcrumbItem[];
+  pathItems: WorkspaceBreadcrumbItem[];
   activeMode: WorkspaceMode;
   onSelectItem: (item: WorkspaceBreadcrumbItem) => void;
   onChooseFile: () => void;
@@ -393,11 +400,6 @@ function WorkspaceBreadcrumb({
   canRefresh: boolean;
 }) {
   const { t } = useI18n();
-  const activeIndex = activeMode === 'preview'
-    ? 0
-    : activeMode === 'mp4'
-    ? 1
-    : Math.max(2, items.length - 1);
 
   return (
     <div className='flex h-11 flex-shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3'>
@@ -407,11 +409,11 @@ function WorkspaceBreadcrumb({
         className='flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-[13px]'
       >
         {items.map((item, index) => {
-          const isActive = index === activeIndex;
+          const isActive = item.mode === activeMode;
           return (
             <div
               key={`${item.label}-${item.path || item.mode}-${index}`}
-              className={`flex min-w-0 items-center gap-0.5 ${index === items.length - 1 ? 'flex-shrink' : 'flex-shrink-0'}`}
+              className='flex flex-shrink-0 items-center gap-0.5'
             >
               {index > 0 && (
                 <ChevronRight
@@ -427,7 +429,7 @@ function WorkspaceBreadcrumb({
                 title={item.path || item.label}
                 className={`min-w-0 truncate rounded-[var(--radius-control)] px-1.5 py-1 ${
                   isActive
-                    ? 'font-semibold text-[var(--color-text-primary)]'
+                    ? 'bg-[var(--color-bg-tertiary)] font-semibold text-[var(--color-text-primary)]'
                     : 'font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
                 }`}
               >
@@ -436,6 +438,27 @@ function WorkspaceBreadcrumb({
             </div>
           );
         })}
+        {activeMode === 'files' && pathItems.map((item) => (
+          <div
+            key={`${item.path || item.label}-path`}
+            className='flex min-w-0 items-center gap-0.5'
+          >
+            <ChevronRight
+              size={14}
+              className='flex-shrink-0 text-[var(--color-text-secondary)]/55'
+            />
+            <button
+              type='button'
+              data-active='true'
+              data-mode={item.mode}
+              onClick={() => onSelectItem(item)}
+              title={item.path || item.label}
+              className='min-w-0 truncate rounded-[var(--radius-control)] px-1.5 py-1 font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+            >
+              {item.label}
+            </button>
+          </div>
+        ))}
       </nav>
 
       <div className='flex flex-shrink-0 items-center gap-1.5'>

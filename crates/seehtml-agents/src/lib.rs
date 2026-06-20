@@ -73,10 +73,29 @@ pub struct CapabilityParameter {
 /// Shared context passed to agents during execution
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentContext {
+    pub session_id: Option<String>,
     pub document: Option<Document>,
     pub config: Option<AiConfig>,
     pub working_dir: Option<std::path::PathBuf>,
+    pub current_file: Option<std::path::PathBuf>,
+    pub selected_text: Option<String>,
+    pub memory_snippets: Vec<MemorySnippet>,
     pub previous_results: HashMap<String, serde_json::Value>,
+}
+
+impl From<AgentRuntimeContext> for AgentContext {
+    fn from(runtime: AgentRuntimeContext) -> Self {
+        Self {
+            session_id: runtime.session_id,
+            document: runtime.current_document,
+            config: None,
+            working_dir: runtime.project_dir,
+            current_file: runtime.current_file,
+            selected_text: runtime.selected_text,
+            memory_snippets: runtime.memory_snippets,
+            previous_results: runtime.previous_results,
+        }
+    }
 }
 
 use serde::{Deserialize, Serialize};
