@@ -107,6 +107,7 @@ pub fn run() {
             commands::update_ai_config,
             commands::get_agent_status,
             commands::agent_chat,
+            commands::agent_chat_stream,
             commands::get_tools,
             commands::save_image,
             commands::clear_rendered_frames,

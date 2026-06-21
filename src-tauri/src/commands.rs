@@ -4,7 +4,7 @@ use seehtml_agents::{Agent, AgentContext, AgentLoop};
 use seehtml_core::*;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
-use tauri::State;
+use tauri::{Emitter, State};
 
 type CmdResult<T> = std::result::Result<T, String>;
 
@@ -32,6 +32,12 @@ pub struct MemoryRecord {
     pub kind: String,
     pub source: Option<String>,
     pub updated_at: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct AgentRunEventPayload {
+    run_id: String,
+    event: AgentLoopEvent,
 }
 
 fn should_skip_tree_entry(name: &str) -> bool {
@@ -791,6 +797,103 @@ pub async fn agent_chat(
         .chat_planned(request)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+}
+
+/// Streaming LLM-based agent chat. The command still resolves with the final
+/// messages, but intermediate planner/tool/text events are emitted immediately.
+#[tauri::command]
+pub async fn agent_chat_stream(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    run_id: String,
+    messages: serde_json::Value,
+    tools: Option<serde_json::Value>,
+    system_prompt: Option<String>,
+    max_iterations: Option<u32>,
+    session_id: Option<String>,
+    project_dir: Option<String>,
+    current_file: Option<String>,
+    current_html: Option<String>,
+    memory: Option<serde_json::Value>,
+) -> CmdResult<serde_json::Value> {
+    let msgs: Vec<LlmMessage> = serde_json::from_value(messages).map_err(|e| e.to_string())?;
+    let runtime_context =
+        build_agent_runtime_context(session_id, project_dir, current_file, current_html, memory);
+
+    let tool_defs = if let Some(t) = tools {
+        serde_json::from_value(t).map_err(|e| e.to_string())?
+    } else {
+        let orch = state.orchestrator.lock().await;
+        let agents = orch.list_agents().await;
+        let mut agent_caps: std::collections::HashMap<
+            AgentId,
+            Vec<seehtml_agents::AgentCapability>,
+        > = std::collections::HashMap::new();
+        for a in &agents {
+            let caps: Vec<seehtml_agents::AgentCapability> = a
+                .capabilities
+                .iter()
+                .map(|c| seehtml_agents::AgentCapability {
+                    action: c.action.clone(),
+                    description: c.description.clone(),
+                    parameters: c.parameters.clone(),
+                })
+                .collect();
+            agent_caps.insert(a.id.clone(), caps);
+        }
+        AgentLoop::build_tools(&agent_caps)
+    };
+    let tool_defs = filter_core_agent_tools(tool_defs);
+
+    let request = AgentLoopRequest {
+        messages: msgs,
+        tools: tool_defs,
+        system_prompt: system_prompt.or_else(|| {
+            Some(
+                "You are SeeHTML AI, an open-source HTML creation agent. \
+             Core capabilities are: generate or edit complete previewable HTML, \
+             export the current HTML to PPTX when explicitly requested, and prepare \
+             MP4-ready HTML when the user explicitly asks for video export. \
+             MP4 rendering is handled by the app preview pipeline, not by an LLM tool. \
+             Do not claim to run OCR, publishing, theme, Markdown, or media-processing tools. \
+             Use tools only when they are necessary and available. \
+             Respond in Chinese if the user writes in Chinese."
+                    .into(),
+            )
+        }),
+        max_iterations: max_iterations.unwrap_or(10),
+        runtime_context,
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentLoopEvent>(128);
+    let event_app = app.clone();
+    let event_run_id = run_id.clone();
+    let forwarder = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let _ = event_app.emit(
+                "seehtml-agent-event",
+                AgentRunEventPayload {
+                    run_id: event_run_id.clone(),
+                    event,
+                },
+            );
+        }
+    });
+
+    let agent_loop = state.agent_loop.lock().await;
+    let result = agent_loop.chat_planned_stream(request, tx.clone()).await;
+    if let Err(error) = &result {
+        let _ = tx
+            .send(AgentLoopEvent::Error {
+                message: error.to_string(),
+            })
+            .await;
+    }
+    drop(tx);
+    let _ = forwarder.await;
+
+    let result = result.map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
 }
 

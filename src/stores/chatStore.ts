@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { AgentToolEvent, ChatMessage, ClarificationOption, ProcessingStep, QueuedRequest, WorkflowStep } from '../types';
-import { runAgentLoop, type AgentExecutionPlan, type LlmMessage } from '../lib/agentLoop';
+import { runAgentLoop, type AgentExecutionPlan, type AgentStreamEvent, type LlmMessage } from '../lib/agentLoop';
 import { getLanguage, t, type Lang } from '../lib/i18n';
 import {
   notifyProjectFilesChanged,
@@ -436,6 +436,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           currentFile,
           currentHtml,
           memory: memoryPayload,
+          onEvent: (event) => applyAgentStreamEvent(set, get, requestId, event),
         },
       );
 
@@ -1369,6 +1370,7 @@ function finalizeProcessingTrace(
       return step;
     }
 
+    if (step.status === 'error') return step;
     return {
       ...step,
       status: 'done',
@@ -1376,6 +1378,223 @@ function finalizeProcessingTrace(
       completedAt: step.completedAt || completedAt,
     };
   });
+}
+
+function applyAgentStreamEvent(
+  set: SetChatState,
+  get: () => ChatState,
+  requestId: string,
+  event: AgentStreamEvent,
+): void {
+  const now = new Date().toISOString();
+  set((s) => {
+    if (s.activeRequestId !== requestId) return {};
+    const steps = s.processingSteps.length > 0
+      ? s.processingSteps
+      : createProcessingSteps(classifyIntent('', false, Boolean(s.htmlDocument)));
+
+    if (event.type === 'plan') {
+      return {
+        processingSteps: steps.map((step) => {
+          if (step.id === 'understand') {
+            return {
+              ...step,
+              status: 'done',
+              completedAt: step.completedAt || now,
+            };
+          }
+          if (step.id === 'route') {
+            return {
+              ...step,
+              status: 'done',
+              startedAt: step.startedAt || now,
+              completedAt: now,
+              detail: planTimelineDetail(event.plan),
+            };
+          }
+          if (step.id === 'execute') {
+            return {
+              ...step,
+              status: 'active',
+              startedAt: step.startedAt || now,
+              detail: executionTimelineDetail(event.plan),
+            };
+          }
+          return step;
+        }),
+      };
+    }
+
+    if (event.type === 'thinking') {
+      return {
+        processingSteps: updateActiveStepDetail(steps, event.content, now),
+      };
+    }
+
+    if (event.type === 'tool_call') {
+      const toolStep: ProcessingStep = {
+        id: `tool-${event.tool.id || event.tool.name}`,
+        title: getLanguage() === 'zh' ? `工具调用：${event.tool.name}` : `Tool call: ${event.tool.name}`,
+        detail: formatStreamValue(event.tool.arguments, 520),
+        status: 'active',
+        startedAt: now,
+      };
+      return {
+        processingSteps: upsertProcessingStep(markActiveStepDone(steps, now), toolStep),
+      };
+    }
+
+    if (event.type === 'tool_result') {
+      const stepId = `tool-${event.result.tool_call_id || event.result.name}`;
+      const failed = Boolean(extractError(event.result.result));
+      return {
+        processingSteps: steps.map((step) => {
+          if (step.id !== stepId) return step;
+          return {
+            ...step,
+            status: failed ? 'error' : 'done',
+            completedAt: now,
+            detail: formatToolTimelineResult(event.result.result),
+          };
+        }),
+      };
+    }
+
+    if (event.type === 'text') {
+      return {
+        processingSteps: steps.map((step) => {
+          if (step.status === 'active') {
+            return { ...step, status: 'done', completedAt: step.completedAt || now };
+          }
+          if (step.id === 'preview') {
+            return {
+              ...step,
+              status: 'active',
+              startedAt: step.startedAt || now,
+              detail: getLanguage() === 'zh'
+                ? '模型已返回结果，正在解析 HTML、工具记录和质量检查。'
+                : 'The model returned output; parsing HTML, tool records, and quality checks.',
+            };
+          }
+          return step;
+        }),
+      };
+    }
+
+    if (event.type === 'done') {
+      return {
+        processingSteps: finalizeProcessingTrace(steps, 'done', now),
+      };
+    }
+
+    if (event.type === 'error') {
+      return {
+        processingSteps: markActiveStepError(steps, event.message, now),
+      };
+    }
+
+    return {};
+  });
+}
+
+function planTimelineDetail(plan: AgentExecutionPlan): string {
+  const zh = getLanguage() === 'zh';
+  const lines = [
+    plan.task_focus,
+    plan.route_reason,
+    plan.steps.length > 0
+      ? `${zh ? '编排步骤：' : 'Planned steps: '}${plan.steps.join(zh ? ' → ' : ' -> ')}`
+      : '',
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+function executionTimelineDetail(plan: AgentExecutionPlan): string {
+  const zh = getLanguage() === 'zh';
+  if (plan.needs_clarification) {
+    return plan.clarification_question || (zh ? '需要先追问一个关键问题。' : 'A key follow-up is needed first.');
+  }
+  if (plan.allowed_tools.length > 0) {
+    return `${zh ? '按计划开放工具：' : 'Allowed tools: '}${plan.allowed_tools.join(', ')}`;
+  }
+  if (plan.wants_html_output || plan.wants_preview_update) {
+    return zh
+      ? '本轮由模型直接生成/修改 HTML，不强制调用工具。'
+      : 'The model will generate or edit HTML directly; tools are not forced.';
+  }
+  return zh ? '本轮直接回复，不调用工具。' : 'Answer directly without tool calls.';
+}
+
+function updateActiveStepDetail(
+  steps: ProcessingStep[],
+  detail: string,
+  now: string,
+): ProcessingStep[] {
+  const activeIndex = steps.findIndex((step) => step.status === 'active');
+  if (activeIndex < 0) return steps;
+  return steps.map((step, index) => {
+    if (index !== activeIndex) return step;
+    return {
+      ...step,
+      detail: mergeDetail(step.detail, detail),
+      startedAt: step.startedAt || now,
+    };
+  });
+}
+
+function markActiveStepDone(steps: ProcessingStep[], now: string): ProcessingStep[] {
+  return steps.map((step) => (
+    step.status === 'active'
+      ? { ...step, status: 'done', completedAt: step.completedAt || now }
+      : step
+  ));
+}
+
+function markActiveStepError(
+  steps: ProcessingStep[],
+  message: string,
+  now: string,
+): ProcessingStep[] {
+  const activeIndex = steps.findIndex((step) => step.status === 'active');
+  const targetIndex = activeIndex >= 0 ? activeIndex : Math.max(0, steps.length - 1);
+  return steps.map((step, index) => {
+    if (index !== targetIndex) return step;
+    return {
+      ...step,
+      status: 'error',
+      completedAt: now,
+      detail: mergeDetail(step.detail, message),
+    };
+  });
+}
+
+function upsertProcessingStep(steps: ProcessingStep[], next: ProcessingStep): ProcessingStep[] {
+  const index = steps.findIndex((step) => step.id === next.id);
+  if (index < 0) return [...steps, next];
+  return steps.map((step, stepIndex) => stepIndex === index ? { ...step, ...next } : step);
+}
+
+function mergeDetail(current: string, addition: string): string {
+  const clean = addition.trim();
+  if (!clean || current.includes(clean)) return current;
+  return `${current}\n${clean}`;
+}
+
+function formatStreamValue(value: unknown, maxLength: number): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength)}\n...` : text;
+}
+
+function formatToolTimelineResult(value: unknown): string {
+  const error = extractError(value);
+  if (error) return `${getLanguage() === 'zh' ? '工具失败：' : 'Tool failed: '}${error}`;
+  const path = extractPath(value);
+  if (path) return `${getLanguage() === 'zh' ? '输出文件：' : 'Output: '}${path}`;
+  if (extractHtmlFromValue(value)) {
+    return getLanguage() === 'zh' ? '工具返回 HTML，继续交给模型整合。' : 'Tool returned HTML for model integration.';
+  }
+  return formatStreamValue(value, 520);
 }
 
 function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan): WorkflowStep[] | undefined {

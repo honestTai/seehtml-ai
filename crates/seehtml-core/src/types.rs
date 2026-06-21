@@ -456,6 +456,8 @@ pub struct AgentLoopResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum AgentLoopEvent {
+    #[serde(rename = "plan")]
+    Plan { plan: AgentExecutionPlan },
     #[serde(rename = "thinking")]
     Thinking { content: String },
     #[serde(rename = "tool_call")]

@@ -58,6 +58,20 @@ export interface AgentExecutionPlan {
   route_reason: string;
 }
 
+export type AgentStreamEvent =
+  | { type: 'plan'; plan: AgentExecutionPlan }
+  | { type: 'thinking'; content: string }
+  | { type: 'tool_call'; tool: ToolCall }
+  | { type: 'tool_result'; result: ToolResult }
+  | { type: 'text'; content: string }
+  | { type: 'done'; usage?: unknown }
+  | { type: 'error'; message: string };
+
+interface AgentRunEventPayload {
+  run_id: string;
+  event: AgentStreamEvent;
+}
+
 /**
  * Run the agent loop: sends conversation to backend, gets LLM response
  * with tool calling support.
@@ -74,6 +88,7 @@ export async function runAgentLoop(
     currentFile?: string | null;
     currentHtml?: string | null;
     memory?: Record<string, string>;
+    onEvent?: (event: AgentStreamEvent) => void;
   }
 ): Promise<{
   assistantContent: string;
@@ -83,6 +98,16 @@ export async function runAgentLoop(
 }> {
   const { invoke } = await import('@tauri-apps/api/core');
   const tools = await loadToolsForIntent(invoke, options?.toolNames);
+  const runId = crypto.randomUUID();
+  let unlisten: (() => void) | undefined;
+
+  if (options?.onEvent) {
+    const { listen } = await import('@tauri-apps/api/event');
+    unlisten = await listen<AgentRunEventPayload>('seehtml-agent-event', ({ payload }) => {
+      if (payload?.run_id !== runId) return;
+      options.onEvent?.(payload.event);
+    });
+  }
 
   // Build LlmMessage array from conversation history + new user message
   const llmMessages: LlmMessage[] = [];
@@ -99,18 +124,36 @@ export async function runAgentLoop(
   // Add the new user message
   llmMessages.push({ role: 'user', content: userMessage });
 
-  // Call backend agent_chat
-  const result = await invoke('agent_chat', {
-    messages: llmMessages,
-    tools,
-    systemPrompt: options?.systemPrompt || null,
-    maxIterations: options?.maxIterations || 10,
-    sessionId: options?.sessionId || null,
-    projectDir: options?.projectDir || null,
-    currentFile: options?.currentFile || null,
-    currentHtml: options?.currentHtml || null,
-    memory: options?.memory || null,
-  });
+  let result: unknown;
+  try {
+    result = await invoke('agent_chat_stream', {
+      runId,
+      messages: llmMessages,
+      tools,
+      systemPrompt: options?.systemPrompt || null,
+      maxIterations: options?.maxIterations || 10,
+      sessionId: options?.sessionId || null,
+      projectDir: options?.projectDir || null,
+      currentFile: options?.currentFile || null,
+      currentHtml: options?.currentHtml || null,
+      memory: options?.memory || null,
+    });
+  } catch (error) {
+    if (!options?.onEvent || !isMissingStreamCommandError(error)) throw error;
+    result = await invoke('agent_chat', {
+      messages: llmMessages,
+      tools,
+      systemPrompt: options?.systemPrompt || null,
+      maxIterations: options?.maxIterations || 10,
+      sessionId: options?.sessionId || null,
+      projectDir: options?.projectDir || null,
+      currentFile: options?.currentFile || null,
+      currentHtml: options?.currentHtml || null,
+      memory: options?.memory || null,
+    });
+  } finally {
+    unlisten?.();
+  }
 
   const response = result as AgentLoopResponse | LlmMessage[];
   const responseMessages = Array.isArray(response) ? response : response.messages || [];
@@ -154,6 +197,11 @@ async function loadToolsForIntent(
 
   const allowed = new Set(toolNames);
   return cachedTools.filter((tool) => allowed.has(tool.name));
+}
+
+function isMissingStreamCommandError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /agent_chat_stream|command.*not.*found|unknown command|not found/i.test(text);
 }
 
 /**

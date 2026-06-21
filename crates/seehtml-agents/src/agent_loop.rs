@@ -75,6 +75,43 @@ impl AgentLoop {
         Ok(PlannedAgentLoopResponse { messages, plan })
     }
 
+    /// FlowMark-style streaming mode: plan first, emit the plan, then stream tool/text events.
+    pub async fn chat_planned_stream(
+        &self,
+        mut request: AgentLoopRequest,
+        tx: mpsc::Sender<AgentLoopEvent>,
+    ) -> Result<PlannedAgentLoopResponse> {
+        let _ = tx
+            .send(AgentLoopEvent::Thinking {
+                content: "Planning request...".into(),
+            })
+            .await;
+        let plan = self.plan_request(&request).await?;
+        let _ = tx
+            .send(AgentLoopEvent::Plan { plan: plan.clone() })
+            .await;
+
+        if plan.needs_clarification {
+            let messages = self.clarification_messages(request, &plan);
+            if let Some(text) = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "assistant")
+                .and_then(|message| message.content.clone())
+            {
+                let _ = tx.send(AgentLoopEvent::Text { content: text }).await;
+            }
+            let _ = tx.send(AgentLoopEvent::Done { usage: None }).await;
+            return Ok(PlannedAgentLoopResponse { messages, plan });
+        }
+
+        request.tools = planned_tools(&request.tools, &plan);
+        let base_prompt = request.system_prompt.take();
+        request.system_prompt = Some(system_prompt_with_plan(base_prompt, &plan));
+        let messages = self.chat_stream(request, tx).await?;
+        Ok(PlannedAgentLoopResponse { messages, plan })
+    }
+
     async fn plan_request(&self, request: &AgentLoopRequest) -> Result<AgentExecutionPlan> {
         let messages = vec![
             LlmMessage {
@@ -203,7 +240,7 @@ impl AgentLoop {
         &self,
         request: AgentLoopRequest,
         tx: mpsc::Sender<AgentLoopEvent>,
-    ) -> Result<()> {
+    ) -> Result<Vec<LlmMessage>> {
         let mut messages = request.messages;
         let tools = request.tools;
         let mut runtime_context = request.runtime_context;
@@ -281,7 +318,7 @@ impl AgentLoop {
         }
 
         let _ = tx.send(AgentLoopEvent::Done { usage: None }).await;
-        Ok(())
+        Ok(full_messages)
     }
 
     /// Call an OpenAI-compatible LLM with function calling.
