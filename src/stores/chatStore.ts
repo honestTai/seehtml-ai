@@ -2001,12 +2001,12 @@ async function buildImagePrompt(
   currentFile: string | null = null,
 ): Promise<string> {
   const ocrItems: string[] = [];
-  const shouldRunDefaultOcr = !capabilities.supportsVision || capabilities.useDefaultOcr;
+  const shouldRunDefaultOcr = !capabilities.supportsVision && capabilities.useDefaultOcr !== false;
   const ocrMode = shouldRunDefaultOcr
-    ? capabilities.supportsVision
-      ? 'Vision input is attached to the LLM, and default OCR fallback is also included.'
-      : 'Configured model is not marked as vision-capable, so default local OCR is required and has been started.'
-    : 'Configured model is marked vision-capable; the image pixels are attached to the LLM as OpenAI-compatible image_url content.';
+    ? 'Configured model is not marked as vision-capable, so default local OCR fallback is used.'
+    : capabilities.supportsVision
+    ? 'Configured model is multimodal; image pixels are attached directly as OpenAI-compatible image_url content. OCR fallback is skipped.'
+    : 'Configured model is not vision-capable and OCR fallback is disabled; images are saved as local references only.';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     for (let index = 0; index < imageDataUrls.length; index += 1) {
