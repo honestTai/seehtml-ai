@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, ChevronDown, Clock3, Loader2, MinusCircle } from 'lucide-react';
-import type { ProcessingStep, QualityCheckResult } from '../../types';
+import { AlertCircle, CheckCircle2, ChevronDown, Clock3, FileCode2, Loader2, MinusCircle } from 'lucide-react';
+import type { ProcessingArtifact, ProcessingStep, QualityCheckResult } from '../../types';
 import { useI18n } from '../../lib/i18n';
 
 interface ProcessingTimelineProps {
@@ -116,6 +116,8 @@ function TimelineRow({ step, isLast, lang }: { step: ProcessingStep; isLast: boo
   const failed = step.status === 'error';
   const running = step.status === 'active';
   const pending = step.status === 'pending';
+  const hasArtifacts = Boolean(step.artifacts?.length);
+  const openByDefault = failed || running || hasArtifacts;
   const Icon = failed ? AlertCircle : running ? Loader2 : pending ? MinusCircle : CheckCircle2;
   const statusClass = failed
     ? 'text-[var(--color-danger)]'
@@ -134,16 +136,67 @@ function TimelineRow({ step, isLast, lang }: { step: ProcessingStep; isLast: boo
       <span className={`relative z-10 mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-primary)] ${statusClass}`}>
         <Icon size={13} className={running ? 'animate-spin' : ''} />
       </span>
-      <div className='min-w-0 flex-1 rounded-[var(--radius-control)] bg-[var(--color-bg-secondary)] px-2.5 py-2'>
-        <div className='flex min-w-0 items-center gap-2'>
+      <details
+        open={openByDefault}
+        className='group/row min-w-0 flex-1 overflow-hidden rounded-[var(--radius-control)] bg-[var(--color-bg-secondary)]'
+      >
+        <summary className='flex cursor-pointer select-none items-center gap-2 px-2.5 py-2'>
           <div className='min-w-0 flex-1 truncate font-semibold text-[var(--color-text-primary)]'>{step.title}</div>
+          {hasArtifacts && (
+            <span className='hidden flex-shrink-0 items-center gap-1 rounded-[var(--radius-control)] bg-[var(--color-bg-primary)] px-1.5 py-0.5 text-[10px] text-[var(--color-text-secondary)] sm:inline-flex'>
+              <FileCode2 size={11} />
+              {step.artifacts?.length}
+            </span>
+          )}
           <span className={`flex-shrink-0 text-[10px] ${statusClass}`}>{formatStepStatus(step.status, lang)}</span>
+          <ChevronDown size={12} className='flex-shrink-0 text-[var(--color-text-secondary)] transition-transform group-open/row:rotate-180' />
+        </summary>
+        <div className='border-t border-[var(--color-border)] px-2.5 py-2'>
+          <div className='whitespace-pre-wrap break-words leading-4 text-[var(--color-text-secondary)]'>{step.detail}</div>
+          {hasArtifacts && (
+            <ArtifactList artifacts={step.artifacts || []} lang={lang} />
+          )}
+          {duration && (
+            <div className='mt-2 text-[10px] text-[var(--color-text-secondary)]'>{duration}</div>
+          )}
         </div>
-        <div className='mt-1 whitespace-pre-wrap break-words leading-4 text-[var(--color-text-secondary)]'>{step.detail}</div>
-        {duration && (
-          <div className='mt-1 text-[10px] text-[var(--color-text-secondary)]'>{duration}</div>
-        )}
+      </details>
+    </div>
+  );
+}
+
+function ArtifactList({ artifacts, lang }: { artifacts: ProcessingArtifact[]; lang: 'zh' | 'en' }) {
+  return (
+    <div className='mt-2 space-y-1.5'>
+      <div className='flex items-center gap-1.5 text-[10px] font-semibold uppercase text-[var(--color-text-secondary)]'>
+        <FileCode2 size={11} />
+        {lang === 'zh' ? '文件与行数' : 'Files and lines'}
       </div>
+      {artifacts.map((artifact) => (
+        <div
+          key={artifact.id}
+          className='rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2 py-1.5'
+        >
+          <div className='flex min-w-0 items-center gap-2'>
+            <span className='min-w-0 flex-1 truncate font-medium text-[var(--color-text-primary)]'>{artifact.label}</span>
+            {artifact.stats && (
+              <span className='flex-shrink-0 rounded-[var(--radius-control)] bg-[var(--color-accent-soft)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--color-accent)]'>
+                {artifact.stats}
+              </span>
+            )}
+          </div>
+          {artifact.path && (
+            <div className='mt-1 truncate font-mono text-[10px] text-[var(--color-text-secondary)]' title={artifact.path}>
+              {artifact.path}
+            </div>
+          )}
+          {artifact.detail && (
+            <div className='mt-1 text-[10px] leading-4 text-[var(--color-text-secondary)]'>
+              {artifact.detail}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

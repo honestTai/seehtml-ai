@@ -74,6 +74,15 @@ export interface ProcessingStep {
   status: ProcessingStepStatus;
   startedAt?: string;
   completedAt?: string;
+  artifacts?: ProcessingArtifact[];
+}
+
+export interface ProcessingArtifact {
+  id: string;
+  label: string;
+  path?: string;
+  detail?: string;
+  stats?: string;
 }
 
 export interface QualityCheckResult {

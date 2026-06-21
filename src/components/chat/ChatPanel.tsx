@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import { Activity, Bot, CheckCircle2, Clock3, Folder, Loader2, RadioTower, XCircle } from 'lucide-react';
 import { useChatStore } from '../../stores/chatStore';
 import type { ChatSession } from '../../stores/chatStore';
@@ -20,9 +20,12 @@ export function ChatPanel() {
   const queuedRequests = useChatStore((s) => s.queuedRequests);
   const renderStatus = usePreviewStore((s) => s.renderStatus);
   const projectPath = useUIStore((s) => s.projectPath);
+  const chatPanelWidth = useUIStore((s) => s.chatPanelWidth);
+  const setChatPanelWidth = useUIStore((s) => s.setChatPanelWidth);
   const scrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
+  const widthRef = useRef(chatPanelWidth);
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId),
     [activeSessionId, sessions],
@@ -30,6 +33,10 @@ export function ChatPanel() {
   const messageCount = messages.length;
   const processingStepCount = processingSteps.length;
   const queuedRequestCount = queuedRequests.length;
+
+  useEffect(() => {
+    widthRef.current = chatPanelWidth;
+  }, [chatPanelWidth]);
 
   const updateStickToBottom = useCallback(() => {
     const element = scrollRef.current;
@@ -42,8 +49,44 @@ export function ChatPanel() {
     endRef.current?.scrollIntoView({ behavior: isProcessing ? 'auto' : 'smooth', block: 'end' });
   }, [isProcessing, messageCount, processingStepCount, queuedRequestCount]);
 
+  const startResize = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (window.matchMedia('(max-width: 1279px)').matches) return;
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = widthRef.current;
+    const previousCursor = document.body.style.cursor;
+    const previousSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const move = (moveEvent: PointerEvent) => {
+      setChatPanelWidth(startWidth + startX - moveEvent.clientX);
+    };
+    const stop = () => {
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousSelect;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+    };
+
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+  }, [setChatPanelWidth]);
+
   return (
-    <section className='w-[410px] min-w-[360px] flex-none overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-bg-secondary)] max-xl:h-[340px] max-xl:w-full max-xl:min-w-0 max-xl:border-l-0 max-xl:border-t'>
+    <section
+      className='chat-panel-resizable relative min-w-[340px] flex-none overflow-hidden border-l border-[var(--color-border)] bg-[var(--color-bg-secondary)] max-xl:h-[340px] max-xl:min-w-0 max-xl:border-l-0 max-xl:border-t'
+      style={{ '--seehtml-chat-panel-width': `${chatPanelWidth}px` } as CSSProperties}
+    >
+      <button
+        type='button'
+        className='absolute inset-y-0 left-0 z-20 hidden w-2 cursor-col-resize touch-none border-l border-transparent hover:border-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]/60 max-xl:hidden xl:block'
+        aria-label='Resize Agent panel'
+        title='拖动调整 Agent 面板宽度'
+        onPointerDown={startResize}
+      />
       <div className='flex h-full min-h-0 flex-col'>
       <div className='flex h-11 items-center border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3'>
         <div className='min-w-0'>

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AgentToolEvent, ChatMessage, ClarificationOption, ProcessingStep, QueuedRequest, WorkflowStep } from '../types';
+import type { AgentToolEvent, ChatMessage, ClarificationOption, ProcessingArtifact, ProcessingStep, QueuedRequest, WorkflowStep } from '../types';
 import { runAgentLoop, type AgentExecutionPlan, type AgentStreamEvent, type LlmMessage } from '../lib/agentLoop';
 import { getLanguage, t, type Lang } from '../lib/i18n';
 import {
@@ -468,6 +468,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
         savedHtmlPath,
       );
+      const traceArtifacts = html
+        ? buildHtmlProcessingArtifacts({
+            path: savedHtmlPath,
+            previousHtml: currentHtml,
+            nextHtml: html,
+            qualityChecks: htmlQuality,
+          })
+        : [];
       const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'agent',
@@ -475,7 +483,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timestamp: new Date().toISOString(),
         startedAt,
         completedAt: new Date().toISOString(),
-        processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
+        processingTrace: attachProcessingArtifacts(finalizeProcessingTrace(get().processingSteps, 'done'), traceArtifacts),
         qualityChecks: htmlQuality,
         toolEvents,
         clarification: plan?.needs_clarification
@@ -647,6 +655,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }
       }
 
+      const traceArtifacts = nextHtml
+        ? buildHtmlProcessingArtifacts({
+            path: savedHtmlPath,
+            previousHtml: state.htmlDocument,
+            nextHtml,
+            qualityChecks,
+          })
+        : [];
       const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'agent',
@@ -654,7 +670,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         timestamp: new Date().toISOString(),
         startedAt,
         completedAt: new Date().toISOString(),
-        processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
+        processingTrace: attachProcessingArtifacts(finalizeProcessingTrace(get().processingSteps, 'done'), traceArtifacts),
         qualityChecks,
         clarification,
         workflow: workflowSteps,
@@ -1373,10 +1389,20 @@ function finalizeProcessingTrace(
   if (steps.length === 0) return [];
   const activeIndex = steps.findIndex((step) => step.status === 'active');
   const firstPendingIndex = steps.findIndex((step) => step.status === 'pending');
-  const terminalIndex = activeIndex >= 0 ? activeIndex : firstPendingIndex >= 0 ? firstPendingIndex : steps.length - 1;
+  const firstErrorIndex = steps.findIndex((step) => step.status === 'error');
+  const terminalIndex = status === 'error' && firstErrorIndex >= 0
+    ? firstErrorIndex
+    : activeIndex >= 0 ? activeIndex : firstPendingIndex >= 0 ? firstPendingIndex : steps.length - 1;
 
   return steps.map((step, index) => {
     if (status === 'error') {
+      if (step.status === 'error') {
+        return {
+          ...step,
+          startedAt: step.startedAt || completedAt,
+          completedAt: step.completedAt || completedAt,
+        };
+      }
       if (index < terminalIndex || step.status === 'done') {
         return {
           ...step,
@@ -1582,14 +1608,34 @@ function markActiveStepError(
   now: string,
 ): ProcessingStep[] {
   const activeIndex = steps.findIndex((step) => step.status === 'active');
-  const targetIndex = activeIndex >= 0 ? activeIndex : Math.max(0, steps.length - 1);
+  const modelStepIndex = isAiProviderError(message)
+    ? steps.findIndex((step) => step.id === 'execute')
+    : -1;
+  const targetIndex = modelStepIndex >= 0
+    ? modelStepIndex
+    : activeIndex >= 0 ? activeIndex : Math.max(0, steps.length - 1);
+  const friendlyMessage = friendlyAgentErrorMessage(message);
   return steps.map((step, index) => {
+    if (index < targetIndex && step.status !== 'error') {
+      return {
+        ...step,
+        status: 'done',
+        completedAt: step.completedAt || now,
+      };
+    }
+    if (index > targetIndex && step.status === 'active') {
+      return {
+        ...step,
+        status: 'pending',
+        completedAt: undefined,
+      };
+    }
     if (index !== targetIndex) return step;
     return {
       ...step,
       status: 'error',
       completedAt: now,
-      detail: mergeDetail(step.detail, message),
+      detail: mergeDetail(step.detail, friendlyMessage),
     };
   });
 }
@@ -1604,6 +1650,105 @@ function mergeDetail(current: string, addition: string): string {
   const clean = addition.trim();
   if (!clean || current.includes(clean)) return current;
   return `${current}\n${clean}`;
+}
+
+function friendlyAgentErrorMessage(message: string): string {
+  const clean = message.replace(/^Error:\s*/i, '').trim();
+  const zh = getLanguage() === 'zh';
+  if (isAiProviderError(clean)) {
+    return zh
+      ? `模型服务连接失败，已按重连策略尝试 5 次。当前预览和上下文会保留，可以继续追加修改或稍后重试。\n原始错误：${clean}`
+      : `The model provider connection failed after 5 retry attempts. The current preview and context are kept, so you can append edits or retry later.\nOriginal error: ${clean}`;
+  }
+  return clean;
+}
+
+function isAiProviderError(message: string): boolean {
+  return /AI API error|LLM request failed|LLM API returned|error sending request|connection|timed out|timeout|429|502|503|504|chat\/completions/i.test(message);
+}
+
+function attachProcessingArtifacts(
+  steps: ProcessingStep[],
+  artifacts: ProcessingArtifact[],
+): ProcessingStep[] {
+  if (artifacts.length === 0) return steps;
+  const preferred = steps.some((step) => step.id === 'preview') ? 'preview' : steps[steps.length - 1]?.id;
+  return steps.map((step) => (
+    step.id === preferred
+      ? { ...step, artifacts: [...(step.artifacts || []), ...artifacts] }
+      : step
+  ));
+}
+
+function buildHtmlProcessingArtifacts({
+  path,
+  previousHtml,
+  nextHtml,
+  qualityChecks,
+}: {
+  path: string | null;
+  previousHtml: string | null;
+  nextHtml: string;
+  qualityChecks: HtmlQualityCheck[];
+}): ProcessingArtifact[] {
+  const diff = htmlLineDiffStats(previousHtml, nextHtml);
+  const passed = qualityChecks.filter((check) => check.passed).length;
+  const quality = qualityChecks.length > 0
+    ? `${getLanguage() === 'zh' ? '质量检查' : 'Quality checks'} ${passed}/${qualityChecks.length}`
+    : getLanguage() === 'zh' ? '未运行额外质量检查' : 'No extra quality checks';
+  return [
+    {
+      id: 'html-output',
+      label: path ? fileName(path) : (getLanguage() === 'zh' ? '内存预览 HTML' : 'In-memory HTML preview'),
+      path: path || undefined,
+      stats: diff,
+      detail: quality,
+    },
+  ];
+}
+
+function htmlLineDiffStats(previousHtml: string | null, nextHtml: string): string {
+  const nextLines = splitLines(nextHtml);
+  if (!previousHtml) {
+    return getLanguage() === 'zh'
+      ? `新建 ${nextLines.length} 行`
+      : `Created ${nextLines.length} lines`;
+  }
+
+  const previousLines = splitLines(previousHtml);
+  let prefix = 0;
+  while (
+    prefix < previousLines.length
+    && prefix < nextLines.length
+    && previousLines[prefix] === nextLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < previousLines.length - prefix
+    && suffix < nextLines.length - prefix
+    && previousLines[previousLines.length - 1 - suffix] === nextLines[nextLines.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const removed = Math.max(0, previousLines.length - prefix - suffix);
+  const added = Math.max(0, nextLines.length - prefix - suffix);
+  const startLine = prefix + 1;
+  const endLine = Math.max(startLine, prefix + Math.max(added, removed));
+  const zh = getLanguage() === 'zh';
+  if (added === 0 && removed === 0) {
+    return zh ? `共 ${nextLines.length} 行，内容无明显变化` : `${nextLines.length} lines, no visible line changes`;
+  }
+  return zh
+    ? `共 ${nextLines.length} 行；修改约第 ${startLine}-${endLine} 行；+${added} -${removed}`
+    : `${nextLines.length} lines; changed around lines ${startLine}-${endLine}; +${added} -${removed}`;
+}
+
+function splitLines(value: string): string[] {
+  return value.replace(/\r\n/g, '\n').split('\n');
 }
 
 function formatStreamValue(value: unknown, maxLength: number): string {
@@ -2576,14 +2721,15 @@ function appendError(
   requestId?: string,
 ) {
   const em = e instanceof Error ? e.message : String(e);
+  const friendlyMessage = friendlyAgentErrorMessage(em);
   const now = new Date().toISOString();
   const errMsg: ChatMessage = {
     id: crypto.randomUUID(),
     role: 'system',
-    content: `Error: ${em}`,
+    content: `Error: ${friendlyMessage}`,
     timestamp: now,
     completedAt: now,
-    processingTrace: finalizeProcessingTrace(get().processingSteps, 'error', now),
+    processingTrace: finalizeProcessingTrace(markActiveStepError(get().processingSteps, em, now), 'error', now),
   };
   let completed = false;
   set((s) => {

@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::info;
 use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
 
 /// Callback type for executing a tool. Returns the tool result as JSON.
 pub type ToolDispatcher = Arc<
@@ -262,7 +263,9 @@ impl AgentLoop {
                 content: "Analyzing request...".into()
             }).await;
 
-            let response = self.call_llm(&full_messages, &tools, &image_data_urls).await?;
+            let response = self
+                .call_llm_with_events(&full_messages, &tools, &image_data_urls, Some(&tx))
+                .await?;
 
             match response {
                 LlmResponse::Text(text) => {
@@ -329,6 +332,16 @@ impl AgentLoop {
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
         image_data_urls: &[String],
+    ) -> Result<LlmResponse> {
+        self.call_llm_with_events(messages, tools, image_data_urls, None).await
+    }
+
+    async fn call_llm_with_events(
+        &self,
+        messages: &[LlmMessage],
+        tools: &[ToolDefinition],
+        image_data_urls: &[String],
+        tx: Option<&mpsc::Sender<AgentLoopEvent>>,
     ) -> Result<LlmResponse> {
         let api_url = self.config.api_url.trim();
         let model = self.config.model.trim();
@@ -424,77 +437,144 @@ impl AgentLoop {
 
         info!("Calling LLM: {} messages, {} tools", messages.len(), tools.len());
 
-        let mut request = self
-            .client
-            .post(api_url)
-            .header("Content-Type", "application/json")
-            .json(&body);
-        if self.config.use_auth_header && !api_key.is_empty() {
-            request = request.header("Authorization", format!("Bearer {}", api_key));
-        }
+        let max_retries = 5usize;
+        let total_attempts = max_retries + 1;
+        let mut last_error = String::new();
 
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| SeeHtmlError::AiApiError(e.to_string()))?;
+        for attempt in 1..=total_attempts {
+            if attempt > 1 {
+                let _ = emit_llm_retry(tx, attempt - 1, max_retries, &last_error).await;
+            }
 
-        let status = resp.status();
-        let body_text = resp
-            .text()
-            .await
-            .map_err(|e| SeeHtmlError::AiApiError(e.to_string()))?;
+            let mut request = self
+                .client
+                .post(api_url)
+                .header("Content-Type", "application/json")
+                .json(&body);
+            if self.config.use_auth_header && !api_key.is_empty() {
+                request = request.header("Authorization", format!("Bearer {}", api_key));
+            }
 
-        if !status.is_success() {
-            return Err(SeeHtmlError::AiApiError(format!(
-                "LLM API returned {}: {}",
-                status,
-                body_text
-            )));
-        }
+            match request.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body_text = resp
+                        .text()
+                        .await
+                        .map_err(|e| SeeHtmlError::AiApiError(e.to_string()))?;
 
-        let json: serde_json::Value = serde_json::from_str(&body_text)
-            .map_err(|e| SeeHtmlError::AiApiError(format!("Invalid LLM JSON: {}", e)))?;
+                    if status.is_success() {
+                        return parse_llm_response(&body_text);
+                    }
 
-        let choice = json["choices"]
-            .as_array()
-            .and_then(|choices| choices.first())
-            .ok_or_else(|| SeeHtmlError::AiApiError(format!("LLM response missing choices: {}", json)))?;
-        let message = choice
-            .get("message")
-            .ok_or_else(|| SeeHtmlError::AiApiError(format!("LLM response missing message: {}", json)))?;
+                    last_error = format!(
+                        "LLM API returned {}: {}",
+                        status,
+                        clip_api_error(&body_text)
+                    );
+                    if is_retryable_llm_status(status.as_u16()) && attempt < total_attempts {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
 
-        // Check for tool_calls in LLM response
-        if let Some(tool_calls) = message.get("tool_calls") {
-            let calls: Vec<ToolCall> = tool_calls
-                .as_array()
-                .unwrap_or(&vec![])
-                .iter()
-                .filter_map(|tc| {
-                    let func = &tc["function"];
-                    let args_str = func["arguments"].as_str().unwrap_or("{}");
-                    let args: serde_json::Value =
-                        serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
-                    Some(ToolCall {
-                        id: tc["id"].as_str().unwrap_or("").to_string(),
-                        name: func["name"].as_str().unwrap_or("").to_string(),
-                        arguments: args,
-                    })
-                })
-                .collect();
-
-            if !calls.is_empty() {
-                return Ok(LlmResponse::ToolCalls(calls));
+                    return Err(SeeHtmlError::AiApiError(last_error));
+                }
+                Err(error) => {
+                    last_error = error.to_string();
+                    if attempt < total_attempts {
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                }
             }
         }
 
-        let content = message["content"].as_str().unwrap_or("").to_string();
-        Ok(LlmResponse::Text(content))
+        Err(SeeHtmlError::AiApiError(format!(
+            "LLM request failed after {} retries: {}",
+            max_retries, last_error
+        )))
     }
 }
 
 enum LlmResponse {
     Text(String),
     ToolCalls(Vec<ToolCall>),
+}
+
+fn parse_llm_response(body_text: &str) -> Result<LlmResponse> {
+    let json: serde_json::Value = serde_json::from_str(body_text)
+        .map_err(|e| SeeHtmlError::AiApiError(format!("Invalid LLM JSON: {}", e)))?;
+
+    let choice = json["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+        .ok_or_else(|| SeeHtmlError::AiApiError(format!("LLM response missing choices: {}", json)))?;
+    let message = choice
+        .get("message")
+        .ok_or_else(|| SeeHtmlError::AiApiError(format!("LLM response missing message: {}", json)))?;
+
+    if let Some(tool_calls) = message.get("tool_calls") {
+        let calls: Vec<ToolCall> = tool_calls
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .filter_map(|tc| {
+                let func = &tc["function"];
+                let args_str = func["arguments"].as_str().unwrap_or("{}");
+                let args: serde_json::Value =
+                    serde_json::from_str(args_str).unwrap_or(serde_json::json!({}));
+                Some(ToolCall {
+                    id: tc["id"].as_str().unwrap_or("").to_string(),
+                    name: func["name"].as_str().unwrap_or("").to_string(),
+                    arguments: args,
+                })
+            })
+            .collect();
+
+        if !calls.is_empty() {
+            return Ok(LlmResponse::ToolCalls(calls));
+        }
+    }
+
+    let content = message["content"].as_str().unwrap_or("").to_string();
+    Ok(LlmResponse::Text(content))
+}
+
+async fn emit_llm_retry(
+    tx: Option<&mpsc::Sender<AgentLoopEvent>>,
+    retry: usize,
+    max_retries: usize,
+    reason: &str,
+) -> std::result::Result<(), mpsc::error::SendError<AgentLoopEvent>> {
+    if let Some(tx) = tx {
+        tx.send(AgentLoopEvent::Thinking {
+            content: format!(
+                "LLM 请求中断，正在重连 {}/{}。上次错误：{}",
+                retry,
+                max_retries,
+                clip_api_error(reason)
+            ),
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+fn is_retryable_llm_status(status: u16) -> bool {
+    matches!(status, 408 | 409 | 425 | 429 | 500 | 502 | 503 | 504)
+}
+
+fn retry_delay(attempt: usize) -> Duration {
+    Duration::from_millis(700 * attempt as u64)
+}
+
+fn clip_api_error(value: &str) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() > 800 {
+        format!("{}...", &compact[..800])
+    } else {
+        compact
+    }
 }
 
 /// Build JSON Schema (OpenAI style) from CapabilityParameter list

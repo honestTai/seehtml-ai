@@ -167,6 +167,16 @@ select:focus-visible {
   contain-intrinsic-size: 1px 96px;
 }
 
+.chat-panel-resizable {
+  width: var(--seehtml-chat-panel-width, 410px);
+}
+
+@media (max-width: 1279px) {
+  .chat-panel-resizable {
+    width: 100%;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
