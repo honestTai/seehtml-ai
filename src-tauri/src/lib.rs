@@ -110,6 +110,7 @@ pub fn run() {
             commands::agent_chat_stream,
             commands::get_tools,
             commands::save_image,
+            commands::prepare_image_assets,
             commands::clear_rendered_frames,
             commands::run_ocr,
             commands::generate_video,

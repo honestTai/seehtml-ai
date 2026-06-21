@@ -83,7 +83,7 @@ function ClarificationChoices({ message }: { message: ChatMessage }) {
       return;
     }
     const reply = option.reply || buildClarificationReply(option, clarification, zh);
-    void sendMessage(reply);
+    void sendMessage(reply, clarification.imageDataUrls);
   };
   const custom = () => {
     const original = clipText(clarification.originalRequest || '', 90);

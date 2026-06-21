@@ -53,6 +53,17 @@ interface AiCapabilities {
   useDefaultOcr: boolean;
 }
 
+type ImageAssetMode = 'ask' | 'use-assets' | 'reference-only' | 'hybrid';
+
+interface PreparedImageAsset {
+  kind: string;
+  label: string;
+  path: string;
+  relative_path: string;
+  width: number;
+  height: number;
+}
+
 export interface ChatSession {
   id: string;
   title: string;
@@ -356,7 +367,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         startedAt,
         completedAt: new Date().toISOString(),
         processingTrace: finalizeProcessingTrace(get().processingSteps, 'done'),
-        clarification: buildClarificationPrompt(intent, displayContent),
+        clarification: buildClarificationPrompt(intent, displayContent, images),
         workflow: buildWorkflowForIntent(intent),
       };
       let completed = false;
@@ -853,6 +864,7 @@ interface AgentIntent {
   wantsVideoExport?: boolean;
   mp4ProfileId?: Mp4ExportProfileId | null;
   htmlSkill?: HtmlSkill;
+  imageAssetMode?: ImageAssetMode;
   needsClarification?: boolean;
   clarificationQuestion?: string;
   clarificationOptions?: ClarificationOption[];
@@ -874,16 +886,27 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
   if (hasImage) {
     const imageEdit = hasHtml && (editWords.test(text) || isRevisionRequest(text) || isImageReferenceEditRequest(text));
     const htmlSkill = selectHtmlSkill(text, imageEdit ? 'edit' : 'image');
+    const imageAssetMode = inferImageAssetMode(text);
+    if (imageAssetMode === 'ask' && shouldAskImageAssetMode(text)) {
+      return clarificationIntent(
+        zh ? '图片素材用法不够明确' : 'Image asset usage is unclear',
+        zh
+          ? '需要先确认这张图是要作为真实素材裁切使用，还是只当风格参考，避免模型重新画偏。'
+          : 'Confirm whether the image should be used as real assets or only as a style reference.',
+        zh ? '这次上传的图片想怎么参与 HTML 生成？' : 'How should the uploaded image be used for this HTML?',
+        imageAssetModeOptions(zh),
+      );
+    }
     return {
       id: imageEdit ? 'image-edit-html' : 'image-to-html',
       title: zh ? (imageEdit ? '按图修改 HTML' : '图片理解') : (imageEdit ? 'Edit HTML from image' : 'Image understanding'),
       summary: zh
         ? imageEdit
-          ? `把上传图片作为视觉参考，继续修改当前 HTML 文件；${requestedPages ? `保持 exactly ${requestedPages} 页；` : ''}完成后覆盖保存并刷新预览。`
-          : `先识别图片内容${requestedPages ? `，按 ${requestedPages} 页` : ''}，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
+          ? `按“${imageAssetModeLabel(imageAssetMode, 'zh')}”处理上传图片，继续修改当前 HTML 文件；${requestedPages ? `保持 exactly ${requestedPages} 页；` : ''}完成后覆盖保存并刷新预览。`
+          : `先按“${imageAssetModeLabel(imageAssetMode, 'zh')}”处理图片${requestedPages ? `，按 ${requestedPages} 页` : ''}，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
         : imageEdit
-          ? `Use the uploaded image as a visual reference to revise the current HTML file${requestedPages ? ` as exactly ${requestedPages} pages` : ''}, then save and refresh preview.`
-          : `Read the image first${requestedPages ? `, create ${requestedPages} pages` : ''}, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
+          ? `Use the uploaded image with "${imageAssetModeLabel(imageAssetMode, 'en')}" to revise the current HTML file${requestedPages ? ` as exactly ${requestedPages} pages` : ''}, then save and refresh preview.`
+          : `Process the image with "${imageAssetModeLabel(imageAssetMode, 'en')}"${requestedPages ? `, create ${requestedPages} pages` : ''}, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
       maxIterations: 6,
       wantsHtmlOutput: true,
       requestedPages,
@@ -891,6 +914,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
       wantsVideoExport,
       mp4ProfileId,
       htmlSkill,
+      imageAssetMode,
     };
   }
 
@@ -1008,6 +1032,62 @@ function isImageReferenceEditRequest(text: string): boolean {
   return /(按|照|参考|根据|对齐|还原|不像|像这|像图|像截图|match|reference|use.*image|according.*image|from.*image)/i.test(normalized);
 }
 
+function inferImageAssetMode(text: string): ImageAssetMode {
+  const normalized = text
+    .replace(/[，。,.!！?？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (/(仅参考|只参考|参考风格|风格参考|不用原图|不要用原图|不要用素材|不使用素材|重新画|重绘|纯\s*html|纯\s*css|reference only|style only|redraw|do not use image assets)/i.test(normalized)) {
+    return 'reference-only';
+  }
+  if (/(混合|一部分用|部分使用|背景用|底图用|素材.*重绘|原图.*重绘|hybrid|mix image assets)/i.test(normalized)) {
+    return 'hybrid';
+  }
+  if (/(使用素材|用素材|用原图|使用原图|用这张图|直接用图|直接使用|作为素材|作为背景|抠图|扣图|裁切|剪裁|切图|分镜|贴图|截取|抽取|crop|cutout|asset|use original|use image asset|use this image)/i.test(normalized)) {
+    return 'use-assets';
+  }
+  return 'ask';
+}
+
+function shouldAskImageAssetMode(text: string): boolean {
+  const normalized = text
+    .replace(/[，。,.!！?？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  const readOnlyImageQuestion = /(这是什么|图片里有什么|识别|读图|ocr|提取文字|describe|what is in|read text)/i.test(normalized);
+  const creationOrEdit = /(按|照|参考|根据|还原|设计|素材|生成|创建|做|制作|修改|优化|重做|html|页面|网页|动画|动效|视频|短片|海报|截图|ui|image|design|reference|create|generate|make|build|edit|animate|video)/i.test(normalized);
+  return creationOrEdit || !readOnlyImageQuestion;
+}
+
+function imageAssetModeOptions(zh: boolean): ClarificationOption[] {
+  return zh
+    ? [
+        option('使用素材并自动裁切', '推荐：本地工具先生成整图、局部裁切和透明候选，HTML 直接引用真实素材，最贴近原图。', true),
+        option('混合：素材+重绘', '用原图/局部做背景或关键物体，同时让 Agent 重绘文字、动效、结构和缺失元素。'),
+        option('仅参考风格重绘', '不直接使用原图素材，只把图片当构图、配色和风格参考；适合不想把素材打进 HTML。'),
+      ]
+    : [
+        option('Use assets and auto-crop', 'Recommended: create full-image, region, and transparent candidates locally, then reference real assets in HTML.', true),
+        option('Hybrid: assets plus redraw', 'Use the image or regions as key backgrounds/objects while redrawing text, motion, layout, and missing elements.'),
+        option('Reference-only redraw', 'Do not embed the image. Use it only for composition, color, and style cues.'),
+      ];
+}
+
+function imageAssetModeLabel(mode: ImageAssetMode | undefined, lang: Lang): string {
+  const zh = lang === 'zh';
+  switch (mode) {
+    case 'use-assets':
+      return zh ? '使用素材并自动裁切' : 'use assets and auto-crop';
+    case 'hybrid':
+      return zh ? '混合：素材+重绘' : 'hybrid assets plus redraw';
+    case 'reference-only':
+      return zh ? '仅参考风格重绘' : 'reference-only redraw';
+    default:
+      return zh ? '先确认素材用法' : 'ask how to use image assets';
+  }
+}
+
 function animationClarificationQuestion(text: string, zh: boolean): string {
   const hasDuration = /(\d+(?:\.\d+)?\s*(秒|分钟|分|s|sec|second|seconds|min|minute|minutes)|一\s*分钟|半\s*分钟|60\s*s)/i.test(text);
   if (zh) {
@@ -1122,12 +1202,17 @@ function formatClarificationContent(intent: AgentIntent): string {
   return `${question}\n\n${detailHint}`;
 }
 
-function buildClarificationPrompt(intent: AgentIntent, originalRequest: string): ChatMessage['clarification'] {
+function buildClarificationPrompt(
+  intent: AgentIntent,
+  originalRequest: string,
+  imageDataUrls: string[] = [],
+): ChatMessage['clarification'] {
   if (!intent.clarificationQuestion || !intent.clarificationOptions?.length) return undefined;
   return {
     question: intent.clarificationQuestion,
     options: intent.clarificationOptions,
     originalRequest,
+    imageDataUrls: imageDataUrls.length > 0 ? imageDataUrls : undefined,
   };
 }
 
@@ -1277,6 +1362,13 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
   const motionDetail = intent.wantsAnimation
     ? (zh ? '已识别动画需求：生成 HTML 时必须包含可预览、可逐帧导出的动效。' : 'Animation requested: generated HTML must preview and export deterministically.')
     : (zh ? '未指定动画时保持页面稳定，不额外制造复杂动效。' : 'No animation requested; keep motion restrained.');
+  const imageDetail = intent.imageAssetMode && intent.imageAssetMode !== 'reference-only'
+    ? (zh
+        ? `图片策略：${imageAssetModeLabel(intent.imageAssetMode, 'zh')}；生成前会准备本地整图、裁切和透明候选素材。`
+        : `Image strategy: ${imageAssetModeLabel(intent.imageAssetMode, 'en')}; local full-image, crop, and transparent candidates are prepared before generation.`)
+    : intent.imageAssetMode === 'reference-only'
+    ? (zh ? '图片策略：仅参考风格重绘，不直接嵌入上传素材。' : 'Image strategy: reference-only redraw; uploaded assets are not embedded.')
+    : '';
   const toolDetail = intent.toolNames && intent.toolNames.length > 0
     ? `${zh ? '仅开放工具：' : 'Allowed tools only: '}${intent.toolNames.join(', ')}`
     : intent.toolNames && intent.toolNames.length === 0
@@ -1287,7 +1379,7 @@ function createProcessingSteps(intent: AgentIntent): ProcessingStep[] {
       : (zh ? '明确请求 MP4，但需要先选择导出版本。' : 'Explicit MP4 request; an export version must be selected first.')
     : (zh ? '只开放核心工具给模型选择；不用工具时直接回复。' : 'Only core tools are available for the model; answer directly when no tool is needed.');
   const skillDetail = intent.htmlSkill
-    ? `${pageDetail} ${motionDetail} ${zh ? '内置质量 Skill：' : 'Built-in quality skill: '}${skillLabel(intent.htmlSkill, getLanguage())}`
+    ? `${pageDetail} ${motionDetail} ${imageDetail ? `${imageDetail} ` : ''}${zh ? '内置质量 Skill：' : 'Built-in quality skill: '}${skillLabel(intent.htmlSkill, getLanguage())}`
     : toolDetail;
   return [
     {
@@ -1828,13 +1920,28 @@ function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan):
       });
     }
 
+    if (intent.imageAssetMode) {
+      steps.push({
+        id: 'image-assets',
+        agent: 'ImageAssetTool',
+        action: intent.imageAssetMode === 'reference-only' ? 'reference_only' : 'prepare_local_assets',
+        parameters: { mode: intent.imageAssetMode },
+        depends_on: plan.allowed_tools.length > 0 ? ['tool-route'] : ['planner'],
+        status: 'Done',
+        result: {
+          mode: imageAssetModeLabel(intent.imageAssetMode, getLanguage()),
+          prepared: intent.imageAssetMode !== 'reference-only',
+        },
+      });
+    }
+
     if (plan.wants_html_output || plan.wants_preview_update) {
       steps.push({
         id: 'preview',
         agent: 'PreviewUpdater',
         action: plan.wants_html_output ? 'save_and_preview_html' : 'prepare_reply',
         parameters: { source: 'agent_result' },
-        depends_on: plan.allowed_tools.length > 0 ? ['tool-route'] : ['planner'],
+        depends_on: intent.imageAssetMode ? ['image-assets'] : plan.allowed_tools.length > 0 ? ['tool-route'] : ['planner'],
         status: 'Done',
         result: { htmlOutput: plan.wants_html_output, previewUpdate: plan.wants_preview_update },
       });
@@ -1893,13 +2000,27 @@ function buildWorkflowForIntent(intent: AgentIntent, plan?: AgentExecutionPlan):
       result: { pages: intent.requestedPages },
     });
   }
+  if (intent.imageAssetMode) {
+    steps.push({
+      id: 'image-assets',
+      agent: 'ImageAssetTool',
+      action: intent.imageAssetMode === 'reference-only' ? 'reference_only' : 'prepare_local_assets',
+      parameters: { mode: intent.imageAssetMode },
+      depends_on: intent.requestedPages ? ['infer-pages'] : ['planner'],
+      status: 'Done',
+      result: {
+        mode: imageAssetModeLabel(intent.imageAssetMode, getLanguage()),
+        prepared: intent.imageAssetMode !== 'reference-only',
+      },
+    });
+  }
   if (intent.wantsAnimation) {
     steps.push({
       id: 'motion-plan',
       agent: 'MotionHTMLSkill',
       action: 'plan_animation',
       parameters: { deterministicExport: true },
-      depends_on: intent.requestedPages ? ['infer-pages'] : ['planner'],
+      depends_on: intent.imageAssetMode ? ['image-assets'] : intent.requestedPages ? ['infer-pages'] : ['planner'],
       status: 'Done',
       result: { exportFrameEvent: 'seehtml:export-frame' },
     });
@@ -2088,6 +2209,32 @@ function withSavedPath(content: string, path: string | null): string {
   return `${content}\n${t('project.savedTo')}\n${path}`;
 }
 
+function imageAssetStrategyPrompt(mode: ImageAssetMode, imageCount: number): string {
+  const plural = imageCount > 1 ? 'images' : 'image';
+  if (mode === 'use-assets') {
+    return `Use the uploaded ${plural} as real source material. Local preparation creates reusable crops/cutouts; embed suitable prepared assets directly in the HTML.`;
+  }
+  if (mode === 'hybrid') {
+    return `Hybrid use: preserve the uploaded ${plural} through prepared assets where fidelity matters, and redraw/animate text, effects, layout, or missing pieces.`;
+  }
+  return `Reference-only: do not embed the uploaded ${plural}; use visual understanding/OCR only to recreate the style or layout.`;
+}
+
+function formatPreparedAssetPrompt(imageIndex: number, assets: PreparedImageAsset[]): string {
+  const lines = assets
+    .slice(0, 14)
+    .map((asset) => {
+      const relative = asset.relative_path || asset.path.replace(/\\/g, '/');
+      return `- ${asset.kind}: ${asset.label}; src="${relative}"; ${asset.width}x${asset.height}`;
+    });
+  return `Image ${imageIndex} prepared assets:\n${lines.join('\n')}`;
+}
+
+function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error || 'unknown error');
+}
+
 function buildPromptForIntent(
   content: string,
   html: string | null,
@@ -2146,6 +2293,12 @@ async function buildImagePrompt(
   currentFile: string | null = null,
 ): Promise<string> {
   const ocrItems: string[] = [];
+  const assetItems: string[] = [];
+  const imageAssetMode = intent.imageAssetMode && intent.imageAssetMode !== 'ask'
+    ? intent.imageAssetMode
+    : inferImageAssetMode(content);
+  const effectiveAssetMode: ImageAssetMode = imageAssetMode === 'ask' ? 'reference-only' : imageAssetMode;
+  const shouldPrepareAssets = effectiveAssetMode === 'use-assets' || effectiveAssetMode === 'hybrid';
   const shouldRunDefaultOcr = !capabilities.supportsVision && capabilities.useDefaultOcr !== false;
   const ocrMode = shouldRunDefaultOcr
     ? 'Configured model is not marked as vision-capable, so default local OCR fallback is used.'
@@ -2162,6 +2315,21 @@ async function buildImagePrompt(
           outputDir: projectExportDir(projectPath),
         });
         notifyProjectFilesChanged(projectPath);
+        if (shouldPrepareAssets) {
+          try {
+            const preparedAssets = await invoke<PreparedImageAsset[]>('prepare_image_assets', {
+              imagePath: savedPath,
+              projectDir: projectPath,
+              index: index + 1,
+            });
+            if (preparedAssets.length > 0) {
+              assetItems.push(formatPreparedAssetPrompt(index + 1, preparedAssets));
+              notifyProjectFilesChanged(projectPath);
+            }
+          } catch (error) {
+            assetItems.push(`Image ${index + 1} asset preparation failed: ${formatErrorMessage(error)}.`);
+          }
+        }
         if (shouldRunDefaultOcr) {
           const ocrResult = await invoke<{ text?: string }>('run_ocr', { imagePath: savedPath, engine: 'easyocr' });
           const text = (ocrResult?.text || '').trim();
@@ -2177,6 +2345,7 @@ async function buildImagePrompt(
 
   const userIntent = content.trim();
   const ocrText = ocrItems.join('\n\n');
+  const preparedAssetText = assetItems.join('\n\n');
   const hasSubstantialText = shouldRunDefaultOcr
     && ocrText.length > 80
     && !ocrText.includes('(no readable text detected)')
@@ -2214,8 +2383,12 @@ Revision contract:
 
   return `I am sending ${imageCount} reference image${imageCount > 1 ? 's' : ''}.
 Image/OCR routing: ${ocrMode}
+Image asset strategy: ${imageAssetStrategyPrompt(effectiveAssetMode, imageCount)}
 
 ${ocrText || 'No OCR text was available.'}
+
+Prepared local assets:
+${preparedAssetText || 'No prepared image assets were requested or available for this strategy.'}
 
 ${currentDocumentBlock}
 
@@ -2224,6 +2397,12 @@ ${userIntent || (hasSubstantialText
     : fallbackTask)}
 
 When multiple images are provided, treat them as one design/context set unless the user explicitly says otherwise.
+Asset usage contract:
+- If the strategy is "use-assets", directly reference the prepared local assets by their relative paths in HTML/CSS/JS. Do not recreate the uploaded image from imagination when an asset path is available.
+- If the strategy is "hybrid", use full/crop/region assets for backgrounds or key visual objects when they preserve the user's material, then redraw only the parts that should be dynamic, textual, or missing.
+- If the strategy is "reference-only", do not embed uploaded image files. Use the image only for composition, color, typography, and style direction.
+- Choose assets intelligently by image type: contact sheets/storyboards can use region panels as shots; product/person photos can use cutouts or centered crops; screenshots/posters can use full/cinematic crops as backplates.
+- Always use relative paths such as exports/image-assets/image_1/panel_1.png. Never use absolute Windows paths and never depend on external CDN assets.
 ${pagePrompt}
 ${motionPrompt}
 ${videoPrompt}

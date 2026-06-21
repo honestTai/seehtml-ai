@@ -54,6 +54,7 @@ export interface ClarificationPrompt {
   question: string;
   options: ClarificationOption[];
   originalRequest?: string;
+  imageDataUrls?: string[];
 }
 
 export interface ClarificationOption {

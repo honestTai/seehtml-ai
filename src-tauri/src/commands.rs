@@ -1,4 +1,5 @@
 use crate::AppState;
+use image::{DynamicImage, GenericImageView, ImageBuffer, Rgba};
 use rusqlite::{Connection, OptionalExtension, params};
 use seehtml_agents::{Agent, AgentContext, AgentLoop};
 use seehtml_core::*;
@@ -23,6 +24,16 @@ pub struct BinaryPreview {
     pub mime: String,
     pub data_url: String,
     pub size: u64,
+}
+
+#[derive(serde::Serialize)]
+pub struct PreparedImageAsset {
+    pub kind: String,
+    pub label: String,
+    pub path: String,
+    pub relative_path: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(serde::Serialize)]
@@ -1066,6 +1077,242 @@ pub async fn save_image(
         .await
         .map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn prepare_image_assets(
+    image_path: String,
+    project_dir: String,
+    index: Option<u32>,
+) -> CmdResult<Vec<PreparedImageAsset>> {
+    let source = PathBuf::from(image_path.trim());
+    if !source.exists() {
+        return Err("Image path does not exist".into());
+    }
+
+    let project = PathBuf::from(project_dir.trim());
+    let idx = index.unwrap_or(1).max(1);
+    let output_dir = project
+        .join("exports")
+        .join("image-assets")
+        .join(format!("image_{}", idx));
+    tokio::fs::create_dir_all(&output_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    tokio::task::spawn_blocking(move || prepare_image_assets_sync(&source, &project, &output_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn prepare_image_assets_sync(
+    source: &Path,
+    project: &Path,
+    output_dir: &Path,
+) -> CmdResult<Vec<PreparedImageAsset>> {
+    let image = image::open(source).map_err(|e| e.to_string())?;
+    let (width, height) = image.dimensions();
+    let mut assets = Vec::new();
+
+    assets.push(save_prepared_asset(
+        project,
+        output_dir,
+        "reference",
+        "full image reference",
+        "full_reference.png",
+        &image,
+    )?);
+
+    if let Some(crop) = center_aspect_crop(&image, 16.0 / 9.0) {
+        assets.push(save_prepared_asset(
+            project,
+            output_dir,
+            "crop",
+            "center cinematic 16:9 crop",
+            "center_16x9.png",
+            &crop,
+        )?);
+    }
+
+    if let Some(crop) = center_aspect_crop(&image, 1.0) {
+        assets.push(save_prepared_asset(
+            project,
+            output_dir,
+            "crop",
+            "center square crop",
+            "center_square.png",
+            &crop,
+        )?);
+    }
+
+    let (cols, rows) = image_grid(width, height);
+    if width >= 360 && height >= 360 {
+        let cell_w = (width / cols).max(1);
+        let cell_h = (height / rows).max(1);
+        for row in 0..rows {
+            for col in 0..cols {
+                let x = col * cell_w;
+                let y = row * cell_h;
+                let crop_w = if col + 1 == cols { width - x } else { cell_w };
+                let crop_h = if row + 1 == rows { height - y } else { cell_h };
+                if crop_w < 120 || crop_h < 120 {
+                    continue;
+                }
+                let panel = image.crop_imm(x, y, crop_w, crop_h);
+                let panel_index = row * cols + col + 1;
+                assets.push(save_prepared_asset(
+                    project,
+                    output_dir,
+                    "region",
+                    &format!("auto region / storyboard panel {}", panel_index),
+                    &format!("panel_{}.png", panel_index),
+                    &panel,
+                )?);
+            }
+        }
+    }
+
+    if let Some(cutout) = make_bright_subject_cutout(&image) {
+        assets.push(save_prepared_asset(
+            project,
+            output_dir,
+            "cutout",
+            "transparent bright subject candidate",
+            "cutout_bright_subject.png",
+            &cutout,
+        )?);
+    }
+
+    Ok(assets)
+}
+
+fn save_prepared_asset(
+    project: &Path,
+    output_dir: &Path,
+    kind: &str,
+    label: &str,
+    file_name: &str,
+    image: &DynamicImage,
+) -> CmdResult<PreparedImageAsset> {
+    let path = output_dir.join(file_name);
+    image.save(&path).map_err(|e| e.to_string())?;
+    let (width, height) = image.dimensions();
+    Ok(PreparedImageAsset {
+        kind: kind.to_string(),
+        label: label.to_string(),
+        relative_path: relative_project_path(project, &path),
+        path: path.to_string_lossy().to_string(),
+        width,
+        height,
+    })
+}
+
+fn relative_project_path(project: &Path, path: &Path) -> String {
+    path.strip_prefix(project)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn center_aspect_crop(image: &DynamicImage, aspect: f32) -> Option<DynamicImage> {
+    let (width, height) = image.dimensions();
+    if width < 160 || height < 160 {
+        return None;
+    }
+    let current = width as f32 / height as f32;
+    let (crop_w, crop_h) = if current > aspect {
+        ((height as f32 * aspect).round() as u32, height)
+    } else {
+        (width, (width as f32 / aspect).round() as u32)
+    };
+    if crop_w == width && crop_h == height {
+        return None;
+    }
+    let x = (width - crop_w) / 2;
+    let y = (height - crop_h) / 2;
+    Some(image.crop_imm(x, y, crop_w, crop_h))
+}
+
+fn image_grid(width: u32, height: u32) -> (u32, u32) {
+    let ratio = width as f32 / height.max(1) as f32;
+    if ratio >= 1.25 {
+        (2, 3)
+    } else if ratio <= 0.8 {
+        (1, 3)
+    } else {
+        (2, 2)
+    }
+}
+
+fn make_bright_subject_cutout(image: &DynamicImage) -> Option<DynamicImage> {
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width < 80 || height < 80 {
+        return None;
+    }
+
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut selected = 0u64;
+
+    for (x, y, pixel) in rgba.enumerate_pixels() {
+        if is_foreground_pixel(pixel.0) {
+            selected += 1;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    let total = (width as u64).saturating_mul(height as u64).max(1);
+    let coverage = selected as f32 / total as f32;
+    if selected == 0 || !(0.01..=0.72).contains(&coverage) {
+        return None;
+    }
+
+    let pad_x = ((max_x - min_x + 1) as f32 * 0.06).round() as u32 + 8;
+    let pad_y = ((max_y - min_y + 1) as f32 * 0.06).round() as u32 + 8;
+    min_x = min_x.saturating_sub(pad_x);
+    min_y = min_y.saturating_sub(pad_y);
+    max_x = (max_x + pad_x).min(width - 1);
+    max_y = (max_y + pad_y).min(height - 1);
+
+    let crop_w = max_x - min_x + 1;
+    let crop_h = max_y - min_y + 1;
+    if crop_w < 60 || crop_h < 60 {
+        return None;
+    }
+
+    let mut out: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(crop_w, crop_h);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let px = rgba.get_pixel(min_x + x, min_y + y);
+            let mut data = px.0;
+            if !is_foreground_pixel(data) {
+                data[3] = 0;
+            }
+            out.put_pixel(x, y, Rgba(data));
+        }
+    }
+
+    Some(DynamicImage::ImageRgba8(out))
+}
+
+fn is_foreground_pixel(pixel: [u8; 4]) -> bool {
+    let [red, green, blue, alpha] = pixel;
+    if alpha < 24 {
+        return false;
+    }
+    let max = red.max(green).max(blue) as i16;
+    let min = red.min(green).min(blue) as i16;
+    let saturation = max - min;
+    let luminance = (0.2126 * red as f32 + 0.7152 * green as f32 + 0.0722 * blue as f32) as i16;
+    (luminance > 96 && saturation > 34)
+        || (luminance > 54 && saturation > 82)
+        || (max > 220 && saturation > 18)
 }
 
 #[tauri::command]
