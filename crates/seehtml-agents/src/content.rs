@@ -2,7 +2,11 @@
 use crate::{Agent, AgentCapability, AgentContext, CapabilityParameter};
 use async_trait::async_trait;
 use seehtml_core::*;
+use std::time::Duration;
 use tracing::info;
+
+const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 pub struct ContentAgent {
     state: AgentState,
@@ -12,7 +16,12 @@ pub struct ContentAgent {
 
 impl ContentAgent {
     pub fn new(config: AiConfig) -> Self {
-        Self { state: AgentState::Idle, config, client: reqwest::Client::new() }
+        let client = reqwest::Client::builder()
+            .connect_timeout(LLM_CONNECT_TIMEOUT)
+            .timeout(LLM_REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { state: AgentState::Idle, config, client }
     }
 
     async fn call_ai(&self, prompt: &AiPrompt, config: &AiConfig) -> Result<AiResponse> {

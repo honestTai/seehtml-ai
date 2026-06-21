@@ -39,6 +39,7 @@ const MAX_SESSION_MESSAGES = 200;
 const MAX_LOCAL_MEMORY_ITEMS = 80;
 const MAX_MEMORY_PAYLOAD_ITEMS = 40;
 const MAX_MEMORY_VALUE_CHARS = 2400;
+const QUALITY_REPAIR_MODEL_ATTEMPTS = 1;
 
 interface PersistentMemoryRecord {
   key: string;
@@ -62,6 +63,12 @@ interface PreparedImageAsset {
   relative_path: string;
   width: number;
   height: number;
+}
+
+interface HtmlQualityGateResult {
+  html: string;
+  qualityChecks: HtmlQualityCheck[];
+  notes: string[];
 }
 
 export interface ChatSession {
@@ -455,10 +462,26 @@ export const useChatStore = create<ChatState>((set, get) => ({
         },
       );
 
-      const html = extractHtmlFromAgentOutput(assistantContent, messages);
+      let html = extractHtmlFromAgentOutput(assistantContent, messages);
       const errors = collectToolErrors(messages);
       const toolEvents = collectToolEvents(messages);
-      const htmlQuality = html ? validateHtmlQuality(html, getLanguage(), intent.htmlSkill) : [];
+      let htmlQuality = html ? validateHtmlQuality(html, getLanguage(), intent.htmlSkill) : [];
+      const repairNotes: string[] = [];
+      if (html) {
+        const repaired = await runHtmlQualityGate({
+          html,
+          intent,
+          projectPath,
+          currentFile,
+          requestId,
+          set,
+          get,
+          memoryPayload,
+        });
+        html = repaired.html;
+        htmlQuality = repaired.qualityChecks;
+        repairNotes.push(...repaired.notes);
+      }
       let savedHtmlPath: string | null = null;
       if (html) {
         savedHtmlPath = await saveHtmlToProject(html, projectPath);
@@ -476,7 +499,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ? buildMp4ExportClarification(displayContent)
         : undefined;
       const assistantText = withSavedPath(
-        formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
+        appendRepairNotes(
+          formatAssistantContent(assistantContent, html, errors, intent.htmlSkill, htmlQuality),
+          repairNotes,
+        ),
         savedHtmlPath,
       );
       const traceArtifacts = html
@@ -586,6 +612,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       let workflowSteps: WorkflowStep[] | undefined;
       let clarification: ChatMessage['clarification'];
       let qualityChecks: HtmlQualityCheck[] = [];
+      const repairNotes: string[] = [];
 
       if (parsed.cmd === 'open') {
         const path = await resolveOpenPath(parsed.rest, commandParams);
@@ -655,15 +682,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       if (nextHtml) {
-        savedHtmlPath = await saveHtmlToProject(nextHtml, projectPath);
         if (commandHtmlSkill) {
-          qualityChecks = validateHtmlQuality(nextHtml, getLanguage(), commandHtmlSkill);
+          const repaired = await runHtmlQualityGate({
+            html: nextHtml,
+            intent: { ...intent, htmlSkill: commandHtmlSkill, wantsHtmlOutput: true },
+            projectPath,
+            currentFile: null,
+            requestId,
+            set,
+            get,
+            memoryPayload: {},
+          });
+          nextHtml = repaired.html;
+          qualityChecks = repaired.qualityChecks;
+          repairNotes.push(...repaired.notes);
           responseContent = `${responseContent}\n${summarizeHtmlQuality(
             qualityChecks,
             commandHtmlSkill,
             getLanguage(),
           )}`;
         }
+        savedHtmlPath = await saveHtmlToProject(nextHtml, projectPath);
       }
 
       const traceArtifacts = nextHtml
@@ -677,7 +716,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const agentMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: 'agent',
-        content: withSavedPath(responseContent, savedHtmlPath),
+        content: withSavedPath(appendRepairNotes(responseContent, repairNotes), savedHtmlPath),
         timestamp: new Date().toISOString(),
         startedAt,
         completedAt: new Date().toISOString(),
@@ -2209,6 +2248,240 @@ function withSavedPath(content: string, path: string | null): string {
   return `${content}\n${t('project.savedTo')}\n${path}`;
 }
 
+function appendRepairNotes(content: string, notes: string[]): string {
+  if (notes.length === 0) return content;
+  const zh = getLanguage() === 'zh';
+  return `${content}\n${zh ? '自动修复：' : 'Auto repair:'}\n${notes.map((note) => `- ${note}`).join('\n')}`;
+}
+
+async function runHtmlQualityGate({
+  html,
+  intent,
+  projectPath,
+  currentFile,
+  requestId,
+  set,
+  get,
+  memoryPayload,
+}: {
+  html: string;
+  intent: AgentIntent;
+  projectPath: string;
+  currentFile: string | null;
+  requestId: string;
+  set: SetChatState;
+  get: () => ChatState;
+  memoryPayload: Record<string, string>;
+}): Promise<HtmlQualityGateResult> {
+  const zh = getLanguage() === 'zh';
+  const notes: string[] = [];
+  let nextHtml = html;
+
+  const local = repairHtmlLocally(nextHtml, intent);
+  nextHtml = local.html;
+  notes.push(...local.notes);
+
+  let qualityChecks = validateHtmlQualityForIntent(nextHtml, intent);
+  if (local.notes.length > 0) {
+    updateQualityGateStep(set, get, requestId, {
+      status: allQualityPassed(qualityChecks) ? 'done' : 'active',
+      detail: `${zh ? '已执行本地质量修复：' : 'Applied local quality repairs: '}${local.notes.join(zh ? '、' : ', ')}`,
+    });
+  }
+
+  if (allQualityPassed(qualityChecks)) {
+    return { html: nextHtml, qualityChecks, notes };
+  }
+
+  const failedBefore = qualityChecks.filter((check) => !check.passed);
+  updateQualityGateStep(set, get, requestId, {
+    status: 'active',
+    detail: `${zh ? '质量检查未通过，准备自动修复：' : 'Quality checks failed; preparing auto repair: '}${failedBefore.map((item) => item.label).join(zh ? '、' : ', ')}`,
+  });
+
+  for (let attempt = 1; attempt <= QUALITY_REPAIR_MODEL_ATTEMPTS; attempt += 1) {
+    try {
+      const repairPrompt = buildQualityRepairPrompt(nextHtml, failedBefore, intent, projectPath);
+      const repaired = await runAgentLoop(repairPrompt, [], {
+        systemPrompt: SYSTEM_PROMPT,
+        maxIterations: 2,
+        toolNames: [],
+        sessionId: get().activeSessionId,
+        projectDir: projectPath || null,
+        currentFile,
+        currentHtml: nextHtml,
+        memory: memoryPayload,
+      });
+      const repairedHtml = extractHtmlFromAgentOutput(repaired.assistantContent, repaired.messages);
+      if (!repairedHtml) {
+        notes.push(zh ? '模型自修复未返回可用 HTML，已保留本地修复版本。' : 'Model repair did not return usable HTML; kept the locally repaired version.');
+        continue;
+      }
+      const repairedLocal = repairHtmlLocally(repairedHtml, intent);
+      const candidate = repairedLocal.html;
+      const candidateChecks = validateHtmlQualityForIntent(candidate, intent);
+      const previousPassed = qualityChecks.filter((check) => check.passed).length;
+      const nextPassed = candidateChecks.filter((check) => check.passed).length;
+      if (nextPassed >= previousPassed) {
+        nextHtml = candidate;
+        qualityChecks = candidateChecks;
+        notes.push(zh ? `模型自修复完成：质量检查 ${nextPassed}/${candidateChecks.length}。` : `Model repair completed: quality checks ${nextPassed}/${candidateChecks.length}.`);
+        notes.push(...repairedLocal.notes);
+      }
+      if (allQualityPassed(qualityChecks)) break;
+    } catch (error) {
+      notes.push(zh
+        ? `模型自修复失败，已保留当前可预览版本：${formatErrorMessage(error)}`
+        : `Model repair failed; kept the current previewable version: ${formatErrorMessage(error)}`);
+    }
+  }
+
+  updateQualityGateStep(set, get, requestId, {
+    status: allQualityPassed(qualityChecks) ? 'done' : 'error',
+    detail: allQualityPassed(qualityChecks)
+      ? (zh ? '质量问题已自动修复并重新检查通过。' : 'Quality issues were repaired and checks now pass.')
+      : `${zh ? '仍有待补强项，但已保留可预览版本：' : 'Some checks still need work, but the previewable version is kept: '}${qualityChecks.filter((check) => !check.passed).map((item) => item.label).join(zh ? '、' : ', ')}`,
+  });
+
+  return { html: nextHtml, qualityChecks, notes };
+}
+
+function validateHtmlQualityForIntent(html: string, intent: AgentIntent): HtmlQualityCheck[] {
+  const checks = validateHtmlQuality(html, getLanguage(), intent.htmlSkill);
+  if (intent.imageAssetMode === 'use-assets' || intent.imageAssetMode === 'hybrid') {
+    checks.push({
+      id: 'image-assets-used',
+      label: getLanguage() === 'zh' ? '已引用上传图片裁切素材' : 'Uploaded image assets referenced',
+      passed: /exports\/image-assets\/image_\d+\//i.test(html.replace(/\\/g, '/')),
+    });
+  }
+  return checks;
+}
+
+function allQualityPassed(checks: HtmlQualityCheck[]): boolean {
+  return checks.length === 0 || checks.every((check) => check.passed);
+}
+
+function repairHtmlLocally(html: string, intent: AgentIntent): { html: string; notes: string[] } {
+  const zh = getLanguage() === 'zh';
+  const notes: string[] = [];
+  let next = toCompleteHtml(html);
+
+  if (!/<!doctype html/i.test(next)) {
+    next = `<!DOCTYPE html>\n${next}`;
+    notes.push(zh ? '补全 DOCTYPE' : 'added DOCTYPE');
+  }
+  if (!/<meta[^>]+name=["']viewport["']/i.test(next)) {
+    next = insertIntoHead(next, '<meta name="viewport" content="width=device-width, initial-scale=1.0" />');
+    notes.push(zh ? '补全 viewport' : 'added viewport');
+  }
+  if (!/<title[^>]*>[\s\S]+?<\/title>/i.test(next)) {
+    next = insertIntoHead(next, '<title>SeeHTML Motion</title>');
+    notes.push(zh ? '补全标题' : 'added title');
+  }
+  if (!/<style[\s>]/i.test(next)) {
+    next = insertIntoHead(next, `<style>
+html, body { margin: 0; min-height: 100%; }
+body { overflow-x: hidden; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+*, *::before, *::after { box-sizing: border-box; }
+img, canvas, video, svg { max-width: 100%; height: auto; }
+@media (max-width: 720px) { body { font-size: 14px; } }
+</style>`);
+    notes.push(zh ? '补全基础样式' : 'added base styles');
+  } else if (!/(@media|clamp\(|min\(|max\(|aspect-ratio|vh|vw|rem)/i.test(next)) {
+    next = next.replace(/<\/style>/i, `
+@media (max-width: 720px) { body { font-size: 14px; } }
+img, canvas, video, svg { max-width: 100%; height: auto; }
+</style>`);
+    notes.push(zh ? '补充响应式约束' : 'added responsive constraints');
+  }
+
+  const needsExportHook = intent.wantsAnimation || intent.wantsVideoExport || intent.htmlSkill?.id === 'canvas-video' || intent.htmlSkill?.id === 'motion-html';
+  if (needsExportHook && !/renderAtTime|seehtml:export-frame|__SEEHTML_EXPORT_TIME__/i.test(next)) {
+    next = insertBeforeBodyEnd(next, `<script>
+(function () {
+  const DURATION = Number(window.__SEEHTML_EXPORT_DURATION__ || 30);
+  window.__SEEHTML_EXPORT_DURATION__ = DURATION;
+  if (typeof window.renderAtTime !== 'function') {
+    window.renderAtTime = function renderAtTime(seconds) {
+      window.__SEEHTML_EXPORT_TIME__ = seconds;
+    };
+  }
+  window.addEventListener('seehtml:export-frame', function (event) {
+    const time = event && event.detail && typeof event.detail.time === 'number'
+      ? event.detail.time
+      : Number(window.__SEEHTML_EXPORT_TIME__ || 0);
+    window.renderAtTime(time);
+  });
+})();
+</script>`);
+    notes.push(zh ? '补充 MP4 逐帧导出 hook' : 'added MP4 frame export hook');
+  }
+
+  return { html: next, notes };
+}
+
+function insertIntoHead(html: string, snippet: string): string {
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${snippet}\n</head>`);
+  if (/<html[\s>]/i.test(html)) return html.replace(/<html([^>]*)>/i, `<html$1>\n<head>\n${snippet}\n</head>`);
+  return `${snippet}\n${html}`;
+}
+
+function insertBeforeBodyEnd(html: string, snippet: string): string {
+  if (/<\/body>/i.test(html)) return html.replace(/<\/body>/i, `${snippet}\n</body>`);
+  return `${html}\n${snippet}`;
+}
+
+function buildQualityRepairPrompt(
+  html: string,
+  failedChecks: HtmlQualityCheck[],
+  intent: AgentIntent,
+  projectPath: string,
+): string {
+  const failed = failedChecks.map((check) => `- ${check.label}`).join('\n');
+  const assetRule = intent.imageAssetMode === 'use-assets' || intent.imageAssetMode === 'hybrid'
+    ? `\nImage asset hard rule:\n- The user uploaded image material and chose/asked for cropping or asset use.\n- You MUST use prepared project assets via relative paths under exports/image-assets/image_1/ (for example full_reference.png, center_16x9.png, panel_1.png, cutout_bright_subject.png if useful).\n- The returned HTML is invalid if it does not reference at least one exports/image-assets/... path.\n- Do not redraw unrelated content from imagination; build motion, layout, captions, and camera movement around the uploaded/cropped image material.`
+    : '';
+  return `Repair this HTML so all quality checks pass. Return ONLY one complete <!DOCTYPE html> document. Do not explain, do not use Markdown.
+
+Failed checks:
+${failed || '- none'}
+${assetRule}
+
+Project folder: ${projectPath}
+
+Keep the user's original creative direction, current visuals, animation timing, and useful behavior. Make the smallest complete repair that fixes the checks.
+
+Current HTML:
+\`\`\`html
+${html.length > 18000 ? `${html.slice(0, 18000)}\n<!-- truncated -->` : html}
+\`\`\``;
+}
+
+function updateQualityGateStep(
+  set: SetChatState,
+  get: () => ChatState,
+  requestId: string,
+  patch: { status: ProcessingStep['status']; detail: string },
+): void {
+  const now = new Date().toISOString();
+  set((state) => {
+    if (state.activeRequestId !== requestId) return {};
+    const title = getLanguage() === 'zh' ? '质量检查与自动修复' : 'Quality check and auto repair';
+    const nextStep: ProcessingStep = {
+      id: 'quality-repair',
+      title,
+      detail: patch.detail,
+      status: patch.status,
+      startedAt: now,
+      completedAt: patch.status === 'active' ? undefined : now,
+    };
+    return {
+      processingSteps: upsertProcessingStep(markActiveStepDone(state.processingSteps, now), nextStep),
+    };
+  });
+}
+
 function imageAssetStrategyPrompt(mode: ImageAssetMode, imageCount: number): string {
   const plural = imageCount > 1 ? 'images' : 'image';
   if (mode === 'use-assets') {
@@ -2403,6 +2676,8 @@ Asset usage contract:
 - If the strategy is "reference-only", do not embed uploaded image files. Use the image only for composition, color, typography, and style direction.
 - Choose assets intelligently by image type: contact sheets/storyboards can use region panels as shots; product/person photos can use cutouts or centered crops; screenshots/posters can use full/cinematic crops as backplates.
 - Always use relative paths such as exports/image-assets/image_1/panel_1.png. Never use absolute Windows paths and never depend on external CDN assets.
+- Hard validation: when strategy is "use-assets" or "hybrid", the final HTML must contain at least one src/url reference to exports/image-assets/... and the visible scene must be built around that uploaded/cropped material. A page that merely redraws a similar-looking concept without using the supplied material is invalid.
+- If the user says crop/cutout/use this image/use material, treat the uploaded image as source footage/art direction that must remain visible in the final result; add motion and camera language around it rather than replacing it with unrelated generated shapes.
 ${pagePrompt}
 ${motionPrompt}
 ${videoPrompt}

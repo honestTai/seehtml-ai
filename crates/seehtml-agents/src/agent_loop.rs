@@ -16,6 +16,9 @@ use tracing::info;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
 
+const LLM_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+const LLM_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+
 /// Callback type for executing a tool. Returns the tool result as JSON.
 pub type ToolDispatcher = Arc<
     dyn Fn(&str, &str, serde_json::Value, AgentRuntimeContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value>> + Send>>
@@ -30,7 +33,12 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     pub fn new(config: AiConfig) -> Self {
-        Self { config, client: reqwest::Client::new(), dispatcher: None }
+        let client = reqwest::Client::builder()
+            .connect_timeout(LLM_CONNECT_TIMEOUT)
+            .timeout(LLM_REQUEST_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self { config, client, dispatcher: None }
     }
 
     pub fn with_dispatcher(mut self, dispatcher: ToolDispatcher) -> Self {
