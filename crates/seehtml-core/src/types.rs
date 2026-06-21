@@ -399,6 +399,8 @@ pub struct AgentLoopRequest {
     pub system_prompt: Option<String>,
     pub max_iterations: u32,
     #[serde(default)]
+    pub image_data_urls: Vec<String>,
+    #[serde(default)]
     pub runtime_context: AgentRuntimeContext,
 }
 

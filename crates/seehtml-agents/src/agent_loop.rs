@@ -130,7 +130,7 @@ impl AgentLoop {
             },
         ];
 
-        match self.call_llm(&messages, &[]).await? {
+        match self.call_llm(&messages, &[], &[]).await? {
             LlmResponse::Text(text) => {
                 let mut plan = parse_plan(&text, &request.tools)?;
                 enforce_plan_context(&mut plan, request);
@@ -173,6 +173,7 @@ impl AgentLoop {
     ) -> Result<Vec<LlmMessage>> {
         let mut messages = request.messages;
         let tools = request.tools;
+        let image_data_urls = request.image_data_urls;
         let mut runtime_context = request.runtime_context;
         let max_iter = request.max_iterations.max(1).min(20);
 
@@ -186,7 +187,7 @@ impl AgentLoop {
         full_messages.append(&mut messages);
 
         for _i in 0..max_iter {
-            let response = self.call_llm(&full_messages, &tools).await?;
+            let response = self.call_llm(&full_messages, &tools, &image_data_urls).await?;
 
             match response {
                 LlmResponse::Text(text) => {
@@ -243,6 +244,7 @@ impl AgentLoop {
     ) -> Result<Vec<LlmMessage>> {
         let mut messages = request.messages;
         let tools = request.tools;
+        let image_data_urls = request.image_data_urls;
         let mut runtime_context = request.runtime_context;
         let max_iter = request.max_iterations.max(1).min(20);
 
@@ -260,7 +262,7 @@ impl AgentLoop {
                 content: "Analyzing request...".into()
             }).await;
 
-            let response = self.call_llm(&full_messages, &tools).await?;
+            let response = self.call_llm(&full_messages, &tools, &image_data_urls).await?;
 
             match response {
                 LlmResponse::Text(text) => {
@@ -326,6 +328,7 @@ impl AgentLoop {
         &self,
         messages: &[LlmMessage],
         tools: &[ToolDefinition],
+        image_data_urls: &[String],
     ) -> Result<LlmResponse> {
         let api_url = self.config.api_url.trim();
         let model = self.config.model.trim();
@@ -346,11 +349,30 @@ impl AgentLoop {
         }
 
         // Convert our LlmMessage → OpenAI message format
+        let latest_user_with_images = if image_data_urls.is_empty() {
+            None
+        } else {
+            messages.iter().rposition(|message| message.role == "user")
+        };
+
         let openai_msgs: Vec<serde_json::Value> = messages
             .iter()
-            .map(|m| {
+            .enumerate()
+            .map(|(index, m)| {
                 let mut msg = serde_json::json!({"role": m.role});
-                if let Some(c) = &m.content {
+                if latest_user_with_images == Some(index) && m.role == "user" {
+                    let mut content = vec![serde_json::json!({
+                        "type": "text",
+                        "text": m.content.as_deref().unwrap_or("")
+                    })];
+                    for url in image_data_urls.iter().take(8) {
+                        content.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": url }
+                        }));
+                    }
+                    msg["content"] = serde_json::json!(content);
+                } else if let Some(c) = &m.content {
                     msg["content"] = serde_json::json!(c);
                 }
                 if let Some(tcs) = &m.tool_calls {

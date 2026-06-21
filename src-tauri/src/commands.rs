@@ -741,6 +741,7 @@ pub async fn agent_chat(
     current_file: Option<String>,
     current_html: Option<String>,
     memory: Option<serde_json::Value>,
+    image_data_urls: Option<Vec<String>>,
 ) -> CmdResult<serde_json::Value> {
     let msgs: Vec<LlmMessage> = serde_json::from_value(messages).map_err(|e| e.to_string())?;
     let runtime_context =
@@ -789,6 +790,7 @@ pub async fn agent_chat(
             )
         }),
         max_iterations: max_iterations.unwrap_or(10),
+        image_data_urls: normalize_image_data_urls(image_data_urls),
         runtime_context,
     };
 
@@ -816,6 +818,7 @@ pub async fn agent_chat_stream(
     current_file: Option<String>,
     current_html: Option<String>,
     memory: Option<serde_json::Value>,
+    image_data_urls: Option<Vec<String>>,
 ) -> CmdResult<serde_json::Value> {
     let msgs: Vec<LlmMessage> = serde_json::from_value(messages).map_err(|e| e.to_string())?;
     let runtime_context =
@@ -863,6 +866,7 @@ pub async fn agent_chat_stream(
             )
         }),
         max_iterations: max_iterations.unwrap_or(10),
+        image_data_urls: normalize_image_data_urls(image_data_urls),
         runtime_context,
     };
 
@@ -895,6 +899,18 @@ pub async fn agent_chat_stream(
 
     let result = result.map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(result).map_err(|e| e.to_string())?)
+}
+
+fn normalize_image_data_urls(value: Option<Vec<String>>) -> Vec<String> {
+    value
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|item| {
+            let trimmed = item.trim();
+            trimmed.starts_with("data:image/") && trimmed.contains(";base64,")
+        })
+        .take(8)
+        .collect()
 }
 
 fn build_agent_runtime_context(

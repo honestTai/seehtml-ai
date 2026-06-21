@@ -88,6 +88,7 @@ export async function runAgentLoop(
     currentFile?: string | null;
     currentHtml?: string | null;
     memory?: Record<string, string>;
+    imageDataUrls?: string[];
     onEvent?: (event: AgentStreamEvent) => void;
   }
 ): Promise<{
@@ -137,6 +138,7 @@ export async function runAgentLoop(
       currentFile: options?.currentFile || null,
       currentHtml: options?.currentHtml || null,
       memory: options?.memory || null,
+      imageDataUrls: options?.imageDataUrls || [],
     });
   } catch (error) {
     if (!options?.onEvent || !isMissingStreamCommandError(error)) throw error;
@@ -150,6 +152,7 @@ export async function runAgentLoop(
       currentFile: options?.currentFile || null,
       currentHtml: options?.currentHtml || null,
       memory: options?.memory || null,
+      imageDataUrls: options?.imageDataUrls || [],
     });
   } finally {
     unlisten?.();

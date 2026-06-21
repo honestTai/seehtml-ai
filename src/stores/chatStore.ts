@@ -324,7 +324,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     const displayContent = content.trim() || (images.length > 1 ? t('chat.imagesDefault') : t('chat.imageDefault'));
-    const intent = classifyIntent(content, images.length > 0, Boolean(state.htmlDocument));
+    const previewDocForIntent = usePreviewStore.getState().document;
+    const hasCurrentHtmlForIntent = Boolean(state.htmlDocument || (previewDocForIntent?.kind === 'html' && previewDocForIntent.content));
+    const intent = classifyIntent(content, images.length > 0, hasCurrentHtmlForIntent);
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -419,8 +421,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
+      const imageCapabilities = images.length > 0 ? await loadAiCapabilities() : null;
       const prompt = images.length > 0
-        ? await buildImagePrompt(content, images, intent, projectPath)
+        ? await buildImagePrompt(content, images, intent, projectPath, imageCapabilities || undefined, currentHtml, currentFile)
         : buildPromptForIntent(content, currentHtml, intent, projectPath);
       const memoryPayload = await buildMemoryPayload(state.conversationMemory, content, projectPath);
 
@@ -436,6 +439,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           currentFile,
           currentHtml,
           memory: memoryPayload,
+          imageDataUrls: imageCapabilities?.supportsVision ? images : [],
           onEvent: (event) => applyAgentStreamEvent(set, get, requestId, event),
         },
       );
@@ -848,17 +852,22 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
   const mp4ProfileId = wantsVideoExport ? inferMp4ExportProfileId(text) : null;
   const createWords = /(生成|创建|做一个|做个|写一个|写个|设计|制作|页面|网页|html|动效|粒子|炫酷|landing|create|generate|make|build|design)/i;
   const htmlCreationWords = /(页面|网页|html|动效|动画|粒子|炫酷|landing|page|site|web|html|animate|animation|motion|design)/i;
-  const editWords = /(修改|优化|改成|换成|调整|美化|润色|重做|重新弄|重新做|主题|风格|edit|update|change|theme|style|polish|redo|rework)/i;
+  const editWords = /(修改|优化|改成|换成|调整|美化|润色|重做|重新弄|重新做|主题|风格|按图|参考|照着|不像|像这|像图|像截图|还原|继续|接着|再|更|不要|加上|去掉|修复|edit|update|change|theme|style|polish|redo|rework|revise|iterate)/i;
   const exportWords = /(导出|输出|转成|转为|转换|export|convert|ppt|pptx|powerpoint|mp4|video)/i;
 
   if (hasImage) {
-    const htmlSkill = selectHtmlSkill(text, 'image');
+    const imageEdit = hasHtml && (editWords.test(text) || isRevisionRequest(text) || isImageReferenceEditRequest(text));
+    const htmlSkill = selectHtmlSkill(text, imageEdit ? 'edit' : 'image');
     return {
-      id: 'image-to-html',
-      title: zh ? '图片理解' : 'Image understanding',
+      id: imageEdit ? 'image-edit-html' : 'image-to-html',
+      title: zh ? (imageEdit ? '按图修改 HTML' : '图片理解') : (imageEdit ? 'Edit HTML from image' : 'Image understanding'),
       summary: zh
-        ? `先识别图片内容${requestedPages ? `，按 ${requestedPages} 页` : ''}，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
-        : `Read the image first${requestedPages ? `, create ${requestedPages} pages` : ''}, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
+        ? imageEdit
+          ? `把上传图片作为视觉参考，继续修改当前 HTML 文件；${requestedPages ? `保持 exactly ${requestedPages} 页；` : ''}完成后覆盖保存并刷新预览。`
+          : `先识别图片内容${requestedPages ? `，按 ${requestedPages} 页` : ''}，再套用 ${skillLabel(htmlSkill, 'zh')} 输出高质量 HTML。`
+        : imageEdit
+          ? `Use the uploaded image as a visual reference to revise the current HTML file${requestedPages ? ` as exactly ${requestedPages} pages` : ''}, then save and refresh preview.`
+          : `Read the image first${requestedPages ? `, create ${requestedPages} pages` : ''}, then use ${skillLabel(htmlSkill, 'en')} for high-quality HTML.`,
       maxIterations: 6,
       wantsHtmlOutput: true,
       requestedPages,
@@ -870,7 +879,7 @@ function classifyIntent(content: string, hasImage: boolean, hasHtml: boolean): A
   }
 
   const asksCreate = createWords.test(text) && !(wantsVideoExport && hasHtml && !htmlCreationWords.test(text));
-  const asksEdit = hasHtml && editWords.test(text);
+  const asksEdit = hasHtml && (editWords.test(text) || isRevisionRequest(text));
   const asksExportOnly = exportWords.test(text) && !asksCreate && !asksEdit;
 
   if (asksCreate || asksEdit) {
@@ -964,6 +973,23 @@ function isUnderSpecifiedAnimationRequest(text: string): boolean {
   const hasCreativeDetail = /关于|主题|产品|品牌|公司|活动|课程|报告|登录|注册|仪表盘|个人|官网|营销|开场|片头|故事|角色|人物|场景|宇宙|星空|海洋|城市|山水|国风|水墨|赛博|科技|霓虹|像素|电影|数据|图表|粒子|烟花|音乐|倒计时|logo|SaaS|CRM|电商|教育|医疗|金融|旅游|游戏|portfolio|landing|dashboard|login|signup|product|brand|story|character|scene|cyber|neon|particle|data|chart|logo/i.test(normalized);
   const hasDuration = /(\d+(?:\.\d+)?\s*(秒|分钟|分|s|sec|second|seconds|min|minute|minutes)|一\s*分钟|半\s*分钟|60\s*s)/i.test(normalized);
   return !hasCreativeDetail || (hasDuration && !hasCreativeDetail);
+}
+
+function isRevisionRequest(text: string): boolean {
+  const normalized = text
+    .replace(/[，。,.!！?？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return false;
+  return /(继续|接着|上一版|当前|这个页面|这个文件|这版|再|更|不要|不对|不是|不像|差不多|按.*图|参考.*图|照.*图|对齐|保留|替换|加上|加入|添加|去掉|删除|修复|修一下|改一下|重新改|迭代|revision|revise|iterate|continue|current|previous|again|more|less|match|reference|fix)/i.test(normalized);
+}
+
+function isImageReferenceEditRequest(text: string): boolean {
+  const normalized = text
+    .replace(/[，。,.!！?？]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return /(按|照|参考|根据|对齐|还原|不像|像这|像图|像截图|match|reference|use.*image|according.*image|from.*image)/i.test(normalized);
 }
 
 function animationClarificationQuestion(text: string, zh: boolean): string {
@@ -1970,15 +1996,17 @@ async function buildImagePrompt(
   imageDataUrls: string[],
   intent: AgentIntent,
   projectPath: string,
+  capabilities: AiCapabilities = { supportsVision: false, useDefaultOcr: true },
+  currentHtml: string | null = null,
+  currentFile: string | null = null,
 ): Promise<string> {
   const ocrItems: string[] = [];
-  const capabilities = await loadAiCapabilities();
   const shouldRunDefaultOcr = !capabilities.supportsVision || capabilities.useDefaultOcr;
   const ocrMode = shouldRunDefaultOcr
     ? capabilities.supportsVision
-      ? 'Default OCR fallback is enabled, so local OCR text is included alongside the image reference.'
+      ? 'Vision input is attached to the LLM, and default OCR fallback is also included.'
       : 'Configured model is not marked as vision-capable, so default local OCR is required and has been started.'
-    : 'Configured model is marked vision-capable and default OCR fallback is disabled; images are saved as local references only.';
+    : 'Configured model is marked vision-capable; the image pixels are attached to the LLM as OpenAI-compatible image_url content.';
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     for (let index = 0; index < imageDataUrls.length; index += 1) {
@@ -2010,6 +2038,7 @@ async function buildImagePrompt(
     && !ocrText.includes('OCR skipped');
   const qualityPrompt = intent.htmlSkill ? `\n\n${buildHtmlSkillPrompt(intent.htmlSkill, getLanguage())}` : '';
   const imageCount = imageDataUrls.length;
+  const editingCurrentHtml = Boolean(currentHtml && intent.id === 'image-edit-html');
   const pagePrompt = intent.requestedPages
     ? `Create exactly ${intent.requestedPages} pages using exactly ${intent.requestedPages} top-level <section class="slide" data-slide="..."> elements. Do not create extra hidden, blank, duplicate, cover, appendix, or decorative sections that could be counted as pages.`
     : 'Choose the smallest complete page count that satisfies the request.';
@@ -2024,11 +2053,26 @@ async function buildImagePrompt(
   const fallbackTask = imageCount > 1
     ? 'Analyze these reference images together and create a complete responsive HTML page that follows their layout, content hierarchy, visual style, and common intent.'
     : 'Analyze the image intent and create a visually polished landing page.';
+  const currentDocumentBlock = editingCurrentHtml
+    ? `Current HTML file to revise:
+Path: ${currentFile || projectHtmlPath(projectPath)}
+\`\`\`html
+${currentHtml && currentHtml.length > 14000 ? `${currentHtml.slice(0, 14000)}\n<!-- truncated current HTML -->` : currentHtml}
+\`\`\`
+
+Revision contract:
+- Treat the attached image${imageCount > 1 ? 's' : ''} as visual reference material for this existing HTML file.
+- Keep the same file as the working target and return a complete updated <!DOCTYPE html> document.
+- Preserve useful existing behavior such as MP4 export hooks, renderAtTime, seehtml:export-frame, keyboard controls, and current page count unless the user explicitly asks to change them.
+- Fix the mismatch between the current HTML and the image/prompt instead of creating an unrelated new concept.`
+    : '';
 
   return `I am sending ${imageCount} reference image${imageCount > 1 ? 's' : ''}.
 Image/OCR routing: ${ocrMode}
 
 ${ocrText || 'No OCR text was available.'}
+
+${currentDocumentBlock}
 
 ${userIntent || (hasSubstantialText
     ? 'Generate a complete HTML page that faithfully reproduces the layout, colors, text hierarchy, and visual structure.'
