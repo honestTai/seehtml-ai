@@ -491,6 +491,11 @@ function TreeNode({
     <div className='px-1'>
       <button
         type='button'
+        draggable={!node.is_dir}
+        onDragStart={(e) => {
+          e.dataTransfer.setData('text/plain', node.path);
+          e.dataTransfer.setData('application/seehtml-file', node.path);
+        }}
         onClick={() => node.is_dir ? onToggle(node) : onOpenFile(node)}
         disabled={!clickable || disabled}
         className={`flex h-8 w-full items-center gap-1.5 rounded-[var(--radius-control)] pr-2 text-left text-xs transition-colors ${

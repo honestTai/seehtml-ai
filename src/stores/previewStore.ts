@@ -37,12 +37,16 @@ export interface PreviewRenderStatus {
 
 interface PreviewState {
   document: PreviewDocument | null;
+  tabs: PreviewDocument[];
+  activeTabId: string | null;
   renderRequest: PreviewRenderRequest | null;
   renderStatus: PreviewRenderStatus | null;
   isLoading: boolean;
   error: string | null;
   openFile: (path: string, name?: string) => Promise<PreviewDocument | null>;
   setGeneratedHtml: (html: string, name?: string) => void;
+  closeTab: (id: string) => void;
+  setActiveTab: (id: string) => void;
   requestRender: (request: PreviewRenderInput) => void;
   clearRenderRequest: (id?: string) => void;
   setRenderStatus: (status: Omit<PreviewRenderStatus, 'updatedAt'> | null) => void;
@@ -99,6 +103,8 @@ interface BinaryPreviewPayload {
 
 export const usePreviewStore = create<PreviewState>((set) => ({
   document: null,
+  tabs: [],
+  activeTabId: null,
   renderRequest: null,
   renderStatus: null,
   isLoading: false,
@@ -111,6 +117,25 @@ export const usePreviewStore = create<PreviewState>((set) => ({
       const message = 'This file type is not previewable.';
       set({ error: message, isLoading: false });
       return null;
+    }
+
+    let existingDoc: PreviewDocument | null = null;
+    set((state) => {
+      const existing = state.tabs.find((t) => t.path === path);
+      if (existing) {
+        existingDoc = existing;
+        return {
+          activeTabId: path,
+          document: existing,
+          isLoading: false,
+          error: null,
+        };
+      }
+      return {};
+    });
+
+    if (existingDoc) {
+      return existingDoc;
     }
 
     set({ isLoading: true, error: null });
@@ -130,7 +155,16 @@ export const usePreviewStore = create<PreviewState>((set) => ({
         doc = { name, path, kind, source: 'file', url: convertFileSrc(path) };
       }
 
-      set({ document: doc, isLoading: false, error: null });
+      set((state) => {
+        const newTabs = [...state.tabs, doc];
+        return {
+          tabs: newTabs,
+          activeTabId: path,
+          document: doc,
+          isLoading: false,
+          error: null,
+        };
+      });
       return doc;
     } catch (error) {
       const message = errorMessage(error);
@@ -140,10 +174,53 @@ export const usePreviewStore = create<PreviewState>((set) => ({
   },
 
   setGeneratedHtml: (html, name = 'AI HTML Preview') => {
-    set({
-      document: { name, kind: 'html', source: 'generated', content: html },
-      isLoading: false,
-      error: null,
+    set((state) => {
+      const doc: PreviewDocument = { name, kind: 'html', source: 'generated', content: html };
+      const otherTabs = state.tabs.filter((t) => t.name !== name && t.source !== 'generated');
+      return {
+        tabs: [...otherTabs, doc],
+        activeTabId: name,
+        document: doc,
+        isLoading: false,
+        error: null,
+      };
+    });
+  },
+
+  closeTab: (id) => {
+    set((state) => {
+      const nextTabs = state.tabs.filter((t) => (t.path || t.name) !== id);
+      let nextActiveId = state.activeTabId;
+      let nextDoc = state.document;
+
+      if (state.activeTabId === id) {
+        if (nextTabs.length > 0) {
+          const fallback = nextTabs[nextTabs.length - 1];
+          nextActiveId = fallback.path || fallback.name;
+          nextDoc = fallback;
+        } else {
+          nextActiveId = null;
+          nextDoc = null;
+        }
+      }
+
+      return {
+        tabs: nextTabs,
+        activeTabId: nextActiveId,
+        document: nextDoc,
+      };
+    });
+  },
+
+  setActiveTab: (id) => {
+    set((state) => {
+      const target = state.tabs.find((t) => (t.path || t.name) === id);
+      if (!target) return {};
+      return {
+        activeTabId: id,
+        document: target,
+        error: null,
+      };
     });
   },
 
@@ -180,5 +257,5 @@ export const usePreviewStore = create<PreviewState>((set) => ({
     });
   },
 
-  clear: () => set({ document: null, renderRequest: null, renderStatus: null, isLoading: false, error: null }),
+  clear: () => set({ document: null, tabs: [], activeTabId: null, renderRequest: null, renderStatus: null, isLoading: false, error: null }),
 }));

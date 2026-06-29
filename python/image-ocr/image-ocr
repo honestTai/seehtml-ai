@@ -1,0 +1,80 @@
+#!/bin/sh
+set -eu
+
+case "$0" in
+  */*) script_dir=${0%/*} ;;
+  *) script_dir=. ;;
+esac
+
+has_arg() {
+  for arg in "$@"; do
+    if [ "$arg" = "$1" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+dry_run=0
+if has_arg --dry-run "$@"; then
+  dry_run=1
+fi
+
+run_or_print() {
+  if [ "$dry_run" -eq 1 ]; then
+    printf '[dry-run] %s\n' "$*"
+    return 0
+  fi
+  "$@"
+}
+
+install_python() {
+  if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    run_or_print brew install python
+  elif command -v apt-get >/dev/null 2>&1; then
+    run_or_print sudo apt-get update
+    run_or_print sudo apt-get install -y python3
+  elif command -v dnf >/dev/null 2>&1; then
+    run_or_print sudo dnf install -y python3
+  elif command -v yum >/dev/null 2>&1; then
+    run_or_print sudo yum install -y python3
+  elif command -v pacman >/dev/null 2>&1; then
+    run_or_print sudo pacman -S --needed python
+  else
+    return 1
+  fi
+}
+
+if has_arg --install-deps "$@"; then
+  install_python "$@" || true
+fi
+
+for python_cmd in python3 python; do
+  if command -v "$python_cmd" >/dev/null 2>&1; then
+    exec "$python_cmd" "$script_dir/ocr_image.py" "$@"
+  fi
+done
+
+if command -v py >/dev/null 2>&1; then
+  exec py -3 "$script_dir/ocr_image.py" "$@"
+fi
+
+{
+  printf '%s\n' 'image-ocr: Python 3 is required but was not found on PATH.'
+  printf '%s\n' ''
+  printf '%s\n' 'Install Python 3, then rerun image-ocr:'
+  printf '%s\n' '- macOS: install from https://www.python.org/downloads/ or run `xcode-select --install`'
+  printf '%s\n' '- Windows: install from https://www.python.org/downloads/windows/ and enable "Add python.exe to PATH"'
+  printf '%s\n' '- Linux: install `python3` with your distro package manager, for example `sudo apt install python3`'
+  printf '%s\n' ''
+  printf '%s\n' 'Or rerun with automatic dependency installation:'
+  printf '%s\n' '  image-ocr --install-deps --doctor'
+  printf '%s\n' ''
+  printf '%s\n' 'After installing Python, run:'
+  printf '%s\n' '  image-ocr --doctor'
+} >&2
+exit 127

@@ -1382,41 +1382,133 @@ pub async fn run_ocr(
     image_path: String,
     engine: Option<String>,
 ) -> CmdResult<serde_json::Value> {
-    let engine = engine.unwrap_or_else(|| "easyocr".into()); // Default easyocr = no Tesseract needed
-    let python_exe = resource_path("python/python.exe");
-    let python_script = resource_path("python/ocr_service.py");
-
-    let py_cmd = if python_exe.exists() {
-        python_exe.to_string_lossy().to_string()
-    } else {
-        "python".into()
-    };
-    let script = if python_script.exists() {
-        python_script.to_string_lossy().to_string()
-    } else {
-        "./python/ocr_service.py".into()
-    };
-
-    let output = tokio::process::Command::new(&py_cmd)
-        .arg(&script)
-        .arg(&image_path)
-        .arg("--engine")
-        .arg(&engine)
-        .arg("--lang")
-        .arg("chi_sim+eng")
-        .output()
+    let engine = normalize_image_ocr_engine(engine.as_deref());
+    let output = run_image_ocr_skill(&image_path, &engine)
         .await
-        .map_err(|e| format!("OCR failed - ensure Python is installed: {}", e))?;
+        .map_err(|e| format!("image-ocr failed: {}", e))?;
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(serde_json::from_str(&stdout).unwrap_or(serde_json::json!({"text": stdout})))
+        parse_image_ocr_stdout(&stdout)
     } else {
         Err(format!(
-            "OCR error: {}",
+            "image-ocr error: {}",
             String::from_utf8_lossy(&output.stderr)
         ))
     }
+}
+
+async fn run_image_ocr_skill(
+    image_path: &str,
+    engine: &str,
+) -> std::io::Result<std::process::Output> {
+    #[cfg(target_os = "windows")]
+    {
+        let wrapper = resource_path("python/image-ocr/image-ocr.ps1");
+        let wrapper_arg = if wrapper.exists() {
+            wrapper.to_string_lossy().to_string()
+        } else {
+            "./python/image-ocr/image-ocr.ps1".into()
+        };
+        tokio::process::Command::new("powershell")
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-File")
+            .arg(wrapper_arg)
+            .arg(image_path)
+            .arg("--engine")
+            .arg(engine)
+            .arg("--lang")
+            .arg("zh-Hans,en-US")
+            .arg("--json")
+            .output()
+            .await
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let wrapper = resource_path("python/image-ocr/image-ocr");
+        let wrapper_arg = if wrapper.exists() {
+            wrapper.to_string_lossy().to_string()
+        } else {
+            "./python/image-ocr/image-ocr".into()
+        };
+        tokio::process::Command::new("/bin/sh")
+            .arg(wrapper_arg)
+            .arg(image_path)
+            .arg("--engine")
+            .arg(engine)
+            .arg("--lang")
+            .arg("zh-Hans,en-US")
+            .arg("--json")
+            .output()
+            .await
+    }
+}
+
+fn normalize_image_ocr_engine(engine: Option<&str>) -> String {
+    match engine.map(str::trim).filter(|value| !value.is_empty()) {
+        Some("vision") => "vision".into(),
+        Some("tesseract") => "tesseract".into(),
+        _ => "auto".into(),
+    }
+}
+
+fn parse_image_ocr_stdout(stdout: &str) -> CmdResult<serde_json::Value> {
+    let trimmed = stdout.trim();
+    let parsed = extract_json_from_stdout(trimmed)
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok());
+    let Some(raw) = parsed else {
+        return Ok(serde_json::json!({
+            "text": trimmed,
+            "engine": "image-ocr",
+            "raw": {"plain": trimmed},
+            "warnings": [],
+        }));
+    };
+
+    let text = raw
+        .get("rawText")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            raw.get("text")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default()
+        });
+
+    let warnings = raw
+        .get("warnings")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+
+    Ok(serde_json::json!({
+        "text": text,
+        "engine": "image-ocr",
+        "raw": raw,
+        "warnings": warnings,
+    }))
+}
+
+fn extract_json_from_stdout(stdout: &str) -> Option<&str> {
+    let start = stdout.find('{')?;
+    let end = stdout.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    Some(&stdout[start..=end])
 }
 
 /// Generate video from slide images using bundled ffmpeg
@@ -1572,6 +1664,31 @@ fn init_memory_db(conn: &Connection) -> CmdResult<()> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_image_ocr_json_normalizes_skill_output() {
+        let stdout = r#"{
+          "image": {"path": "C:\\tmp\\shot.png", "width": 1080, "height": 1920},
+          "rawText": "第一行\nSecond line",
+          "text": [
+            {"text": "第一行", "confidence": 0.91},
+            {"text": "Second line", "confidence": 0.82}
+          ],
+          "warnings": ["OCR engine: Tesseract; languages: chi_sim+eng"]
+        }"#;
+
+        let parsed = parse_image_ocr_stdout(stdout).expect("valid image-ocr json");
+
+        assert_eq!(parsed["text"], "第一行\nSecond line");
+        assert_eq!(parsed["engine"], "image-ocr");
+        assert_eq!(parsed["raw"]["image"]["path"], "C:\\tmp\\shot.png");
+        assert_eq!(parsed["warnings"][0], "OCR engine: Tesseract; languages: chi_sim+eng");
+    }
 }
 
 async fn with_project_memory_db<T, F>(project_path: String, f: F) -> CmdResult<T>

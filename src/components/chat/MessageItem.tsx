@@ -1,4 +1,4 @@
-import { Bot, Check, Info, PencilLine, User } from 'lucide-react';
+import { Check, Info, PencilLine, Sparkles } from 'lucide-react';
 import type { AgentToolEvent, ChatMessage, ClarificationOption, WorkflowStep } from '../../types';
 import { useChatStore } from '../../stores/chatStore';
 import { ProcessingTimeline } from './ProcessingTimeline';
@@ -14,17 +14,24 @@ export function MessageItem({ message }: Props) {
   return (
     <div className={`render-contained flex gap-2.5 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && (
-        <div className='mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-primary)] text-[var(--color-text-secondary)]'>
-          {isSystem ? <Info size={14} /> : <Bot size={14} />}
+        <div className={`mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-control)] border ${
+          isSystem
+            ? 'border-[var(--color-border)] bg-[var(--color-bg-primary)] text-[var(--color-text-secondary)]'
+            : 'border-[var(--color-accent)] bg-[var(--color-accent)] text-white'
+        }`}>
+          {isSystem ? <Info size={14} /> : <Sparkles size={14} />}
         </div>
       )}
-      <div className={`max-w-[86%] px-3 py-2 text-[13px] leading-6 ${
+      <div className={`max-w-[86%] px-3 py-2 text-[13px] leading-6 shadow-sm ${
         isUser
-          ? 'rounded-[var(--radius-panel)] bg-[var(--color-accent-soft)] text-[var(--color-text-primary)] shadow-[inset_0_0_0_1px_var(--color-border)]'
+          ? 'rounded-[var(--radius-panel)] bg-[var(--color-accent-soft)] text-[var(--color-text-primary)]'
         : isSystem
-          ? 'text-[var(--color-text-secondary)]'
-          : 'text-[var(--color-text-primary)]'
+          ? 'bg-transparent text-[var(--color-text-secondary)] shadow-none'
+          : 'rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-white text-[var(--color-text-primary)]'
         }`}>
+        {isUser && (
+          <div className='mb-1 text-[10px] font-bold uppercase tracking-normal text-[var(--color-accent)]'>Prompt</div>
+        )}
         <div className='whitespace-pre-wrap'>{message.content}</div>
         {hasClarification && (
           <ClarificationChoices message={message} />
@@ -57,11 +64,6 @@ export function MessageItem({ message }: Props) {
           <WorkflowTrace steps={message.workflow} />
         )}
       </div>
-      {isUser && (
-        <div className='mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-text-primary)] text-[var(--color-bg-secondary)]'>
-          <User size={13} />
-        </div>
-      )}
     </div>
   );
 }

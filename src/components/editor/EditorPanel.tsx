@@ -1,10 +1,11 @@
 import ReactMarkdown from 'react-markdown';
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { AlertCircle, ChevronRight, FileQuestion, FileText, FolderOpen, Loader2, RefreshCw, VideoOff } from 'lucide-react';
+import { AlertCircle, ChevronRight, FileQuestion, FileText, FolderOpen, Loader2, RefreshCw, Settings, Sun, VideoOff } from 'lucide-react';
 import { useChatStore } from '../../stores/chatStore';
 import { PREVIEWABLE_EXTENSIONS, usePreviewStore, type PreviewDocument } from '../../stores/previewStore';
 import { HtmlPreview } from './HtmlPreview';
 import { useI18n } from '../../lib/i18n';
+import { getTheme, setTheme, type ThemeMode } from '../../lib/theme';
 import { FileExplorer } from '../file/FileExplorer';
 import { joinProjectPath, notifyProjectFilesChanged, projectExportPath, projectHtmlPath } from '../../lib/projectPaths';
 import { pickExistingProject } from '../../lib/workspace';
@@ -19,6 +20,7 @@ interface WorkspaceBreadcrumbItem {
 export function EditorPanel() {
   const { t } = useI18n();
   const [currentSlide, setCurrentSlide] = useState(0);
+  const [, setThemeMode] = useState<ThemeMode>(getTheme());
   const [, setCapturedImages] = useState<string[]>([]);
   const htmlDoc = useChatStore((s) => s.htmlDocument);
   const previewDocument = usePreviewStore((s) => s.document);
@@ -32,12 +34,99 @@ export function EditorPanel() {
   const setWorkspaceSelectionPath = useUIStore((s) => s.setWorkspaceSelectionPath);
   const workspaceMode = useUIStore((s) => s.workspaceMode);
   const setWorkspaceMode = useUIStore((s) => s.setWorkspaceMode);
+  const openModelSettings = useUIStore((s) => s.setModelSettingsOpen);
   const autoOpenedProjectRef = useRef<string | null>(null);
+
+  const tabs = usePreviewStore((s) => s.tabs);
+  const activeTabId = usePreviewStore((s) => s.activeTabId);
+  const setActiveTab = usePreviewStore((s) => s.setActiveTab);
+  const closeTab = usePreviewStore((s) => s.closeTab);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const openProjectDocument = useCallback(async (path: string, fallbackMode: WorkspaceMode) => {
+    setWorkspaceSelectionPath(path);
+    setWorkspaceMode(fallbackMode);
+    const doc = await openPreviewFile(path, fileName(path));
+    if (!doc) return;
+    setWorkspaceMode(doc.kind === 'video' ? 'mp4' : 'preview');
+    if (doc.kind === 'html' && doc.content) {
+      useChatStore.getState().setHtmlDocument(doc.content);
+    }
+  }, [openPreviewFile, setWorkspaceMode, setWorkspaceSelectionPath]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes('application/seehtml-file') || e.dataTransfer.types.includes('Files')) {
+      e.preventDefault();
+      setIsDragging(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const path = e.dataTransfer.getData('application/seehtml-file');
+    if (path) {
+      await openProjectDocument(path, 'preview');
+    }
+  }, [openProjectDocument]);
 
   const activeDoc = previewDocument || (htmlDoc
     ? { name: t('preview.generatedHtml'), kind: 'html' as const, source: 'generated' as const, content: htmlDoc }
     : null);
   const activeDocKey = activeDoc?.path || activeDoc?.name || activeDoc?.content?.slice(0, 64) || '';
+
+  // Setup system-level file drag and drop
+  useEffect(() => {
+    let unlistenDragEnter: (() => void) | undefined;
+    let unlistenDragLeave: (() => void) | undefined;
+    let unlistenDragDrop: (() => void) | undefined;
+
+    const setupTauriDragEvents = async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlistenDragEnter = await listen('tauri://drag-enter', () => {
+          setIsDragging(true);
+        });
+        unlistenDragLeave = await listen('tauri://drag-leave', () => {
+          setIsDragging(false);
+        });
+        unlistenDragDrop = await listen<{ paths: string[] }>('tauri://drag-drop', async (event) => {
+          setIsDragging(false);
+          const paths = event.payload.paths;
+          if (paths && paths.length > 0) {
+            const droppedPath = paths[0];
+            try {
+              const { invoke } = await import('@tauri-apps/api/core');
+              await invoke('list_directory', { path: droppedPath });
+              // Succeeded! It's a directory
+              setProjectPath(droppedPath);
+              setWorkspaceSelectionPath(droppedPath);
+              setWorkspaceMode('files');
+              useChatStore.getState().ensureProjectSession(droppedPath);
+              notifyProjectFilesChanged(droppedPath);
+            } catch {
+              // Failed! It's a file
+              await openProjectDocument(droppedPath, 'preview');
+            }
+          }
+        });
+      } catch (e) {
+        console.error('Failed to setup Tauri drag-drop events', e);
+      }
+    };
+
+    void setupTauriDragEvents();
+
+    return () => {
+      unlistenDragEnter?.();
+      unlistenDragLeave?.();
+      unlistenDragDrop?.();
+    };
+  }, [openPreviewFile, setProjectPath, setWorkspaceMode, setWorkspaceSelectionPath]);
 
   const handleCapture = useCallback((dataUrl: string, index: number) => {
     setCapturedImages((prev) => {
@@ -149,16 +238,7 @@ export function EditorPanel() {
     setCurrentSlide(0);
   }, [activeDocKey, workspaceMode]);
 
-  const openProjectDocument = useCallback(async (path: string, fallbackMode: WorkspaceMode) => {
-    setWorkspaceSelectionPath(path);
-    setWorkspaceMode(fallbackMode);
-    const doc = await openPreviewFile(path, fileName(path));
-    if (!doc) return;
-    setWorkspaceMode(doc.kind === 'video' ? 'mp4' : 'preview');
-    if (doc.kind === 'html' && doc.content) {
-      useChatStore.getState().setHtmlDocument(doc.content);
-    }
-  }, [openPreviewFile, setWorkspaceMode, setWorkspaceSelectionPath]);
+
 
   const openProjectHtmlPreview = useCallback(async () => {
     setWorkspaceMode('preview');
@@ -193,8 +273,19 @@ export function EditorPanel() {
     }
   }, [openProjectDocument, openProjectHtmlPreview, projectPath, renderStatus, setWorkspaceMode, setWorkspaceSelectionPath]);
 
+  const cycleTheme = useCallback(() => {
+    const next: ThemeMode = document.documentElement.classList.contains('theme-dark') ? 'light' : 'dark';
+    setTheme(next);
+    setThemeMode(next);
+  }, []);
+
   return (
-    <section className='min-w-[520px] flex-1 overflow-hidden bg-[var(--color-bg-primary)] max-xl:min-w-0 max-xl:flex-1'>
+    <section
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className='relative min-w-[520px] flex-1 overflow-hidden bg-[var(--color-bg-primary)] max-[900px]:min-w-0 max-[900px]:flex-1'
+    >
       <div className='flex h-full min-h-0 flex-col overflow-hidden'>
         <WorkspaceBreadcrumb
           items={modeItems}
@@ -205,7 +296,54 @@ export function EditorPanel() {
           onChooseFolder={chooseFolder}
           onRefresh={refreshProject}
           canRefresh={Boolean(projectPath)}
+          onCycleTheme={cycleTheme}
+          onOpenSettings={() => openModelSettings(true)}
         />
+
+        {/* Multi-Tab Bar */}
+        {tabs.length > 0 && (workspaceMode === 'preview' || workspaceMode === 'mp4') && (
+          <div className="flex h-[38px] flex-shrink-0 items-center gap-1.5 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-4 overflow-x-auto select-none">
+            {tabs.map((tab) => {
+              const id = tab.path || tab.name;
+              const isActive = activeTabId === id;
+              return (
+                <div
+                  key={id}
+                  className={`flex h-[30px] items-center gap-2 rounded-t-[var(--radius-control)] border border-b-0 px-3 text-xs transition-all ${
+                    isActive
+                      ? 'border-[var(--color-border)] bg-[var(--color-bg-primary)] font-semibold text-[var(--color-text-primary)] shadow-[0_-2px_6px_rgba(0,0,0,0.02)]'
+                      : 'border-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setActiveTab(id);
+                      if (tab.path) {
+                        setWorkspaceSelectionPath(tab.path);
+                      }
+                      setWorkspaceMode(tab.kind === 'video' ? 'mp4' : 'preview');
+                      // If it's HTML, update htmlDocument inside store
+                      if (tab.kind === 'html' && tab.content) {
+                        useChatStore.getState().setHtmlDocument(tab.content);
+                      }
+                    }}
+                    className="max-w-[120px] truncate cursor-pointer"
+                  >
+                    {tab.name}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeTab(id)}
+                    className="flex h-4 w-4 items-center justify-center rounded-full text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-danger)] transition-colors cursor-pointer"
+                  >
+                    &times;
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div className='min-h-0 flex-1 bg-[var(--color-bg-primary)]' data-workspace-mode={workspaceMode}>
           {backgroundHtmlDoc?.kind === 'html' && (
@@ -245,6 +383,17 @@ export function EditorPanel() {
           )}
         </div>
       </div>
+
+      {/* Visual File Drop Overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center border-2 border-dashed border-[var(--color-accent)] bg-[var(--color-bg-primary)]/90 backdrop-blur-sm">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--color-accent-soft)] text-[var(--color-accent)] animate-bounce mb-3">
+            <FolderOpen size={24} />
+          </div>
+          <p className="text-[15px] font-bold text-[var(--color-text-primary)]">松开鼠标以导入或打开文件</p>
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">支持拖入 HTML 文件进行预览，或拖入文件夹作为项目</p>
+        </div>
+      )}
     </section>
   );
 }
@@ -263,12 +412,37 @@ function PreviewRenderer({
   const { t } = useI18n();
 
   if (doc.kind === 'html') {
+    const handleHtmlChange = async (nextHtml: string) => {
+      useChatStore.getState().setHtmlDocument(nextHtml);
+      const projectPath = useUIStore.getState().projectPath;
+      const outputPath = doc.path || (projectPath ? projectHtmlPath(projectPath) : null);
+
+      if (!outputPath) {
+        usePreviewStore.getState().setGeneratedHtml(nextHtml, doc.name);
+        return;
+      }
+
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke<string>('save_html', {
+        html: nextHtml,
+        path: outputPath,
+      });
+      if (projectPath) notifyProjectFilesChanged(projectPath);
+      const updated = await usePreviewStore.getState().openFile(outputPath, fileName(outputPath));
+      if (updated) {
+        const ui = useUIStore.getState();
+        ui.setWorkspaceSelectionPath(outputPath);
+        ui.setWorkspaceMode('preview');
+      }
+    };
+
     return (
       <HtmlPreview
         htmlContent={doc.content || ''}
         currentSlide={currentSlide}
         onSlideChange={onSlideChange}
         onCapture={onCapture}
+        onHtmlChange={handleHtmlChange}
         baseHref={doc.source === 'file' ? baseHref(doc.url) : undefined}
         processRenderRequests={false}
       />
@@ -389,6 +563,8 @@ function WorkspaceBreadcrumb({
   onChooseFolder,
   onRefresh,
   canRefresh,
+  onCycleTheme,
+  onOpenSettings,
 }: {
   items: WorkspaceBreadcrumbItem[];
   pathItems: WorkspaceBreadcrumbItem[];
@@ -398,15 +574,17 @@ function WorkspaceBreadcrumb({
   onChooseFolder: () => void;
   onRefresh: () => void;
   canRefresh: boolean;
+  onCycleTheme: () => void;
+  onOpenSettings: () => void;
 }) {
   const { t } = useI18n();
 
   return (
-    <div className='flex h-11 flex-shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3'>
+    <div className='flex h-[62px] flex-shrink-0 items-center gap-2 border-b border-[var(--color-border)] bg-white px-6'>
       <nav
         aria-label='breadcrumb'
         data-testid='workspace-breadcrumb'
-        className='flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden text-[13px]'
+        className='flex min-w-0 flex-1 items-center gap-1 overflow-hidden text-[14px]'
       >
         {items.map((item, index) => {
           const isActive = item.mode === activeMode;
@@ -429,8 +607,8 @@ function WorkspaceBreadcrumb({
                 title={item.path || item.label}
                 className={`min-w-0 truncate rounded-[var(--radius-control)] px-1.5 py-1 ${
                   isActive
-                    ? 'bg-[var(--color-bg-tertiary)] font-semibold text-[var(--color-text-primary)]'
-                    : 'font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+                    ? 'font-semibold text-[var(--color-text-primary)]'
+                    : 'font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]'
                 }`}
               >
                 {item.label}
@@ -461,13 +639,18 @@ function WorkspaceBreadcrumb({
         ))}
       </nav>
 
-      <div className='flex flex-shrink-0 items-center gap-1.5'>
+      <span className='mr-4 inline-flex items-center gap-2 text-[13px] font-medium text-[var(--color-text-secondary)]'>
+        <span className='h-2 w-2 rounded-full bg-[var(--color-success)]' />
+        Ready
+      </span>
+
+      <div className='flex flex-shrink-0 items-center gap-3'>
         <button
           type='button'
           onClick={onChooseFile}
           title={t('sidebar.openFile')}
           aria-label={t('sidebar.openFile')}
-          className='inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+          className='inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-accent)]'
         >
           <FileText size={15} />
         </button>
@@ -476,7 +659,7 @@ function WorkspaceBreadcrumb({
           onClick={onChooseFolder}
           title={t('sidebar.chooseFolder')}
           aria-label={t('sidebar.chooseFolder')}
-          className='inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+          className='inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-accent)]'
         >
           <FolderOpen size={15} />
         </button>
@@ -486,9 +669,15 @@ function WorkspaceBreadcrumb({
           disabled={!canRefresh}
           title={t('sidebar.refresh')}
           aria-label={t('sidebar.refresh')}
-          className='inline-flex h-7 w-7 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)] disabled:cursor-default disabled:opacity-35'
+          className='inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-accent)] disabled:cursor-default disabled:opacity-35'
         >
           <RefreshCw size={15} />
+        </button>
+        <button type='button' onClick={onCycleTheme} className='inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-accent)]' title='Theme' aria-label='Theme'>
+          <Sun size={16} />
+        </button>
+        <button type='button' onClick={onOpenSettings} className='inline-flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-accent)]' title='Settings' aria-label='Settings'>
+          <Settings size={16} />
         </button>
       </div>
     </div>

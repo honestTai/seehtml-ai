@@ -12,6 +12,8 @@ ffmpeg/
 python/*
 !python/ocr_service.py
 !python/.gitkeep
+!python/image-ocr/
+!python/image-ocr/*
 
 # Local installers and generated packages
 *.msi

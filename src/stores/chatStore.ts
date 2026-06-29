@@ -2604,9 +2604,12 @@ async function buildImagePrompt(
           }
         }
         if (shouldRunDefaultOcr) {
-          const ocrResult = await invoke<{ text?: string }>('run_ocr', { imagePath: savedPath, engine: 'easyocr' });
+          const ocrResult = await invoke<{ text?: string; engine?: string; warnings?: string[] }>('run_ocr', { imagePath: savedPath });
           const text = (ocrResult?.text || '').trim();
-          ocrItems.push(`Image ${index + 1} saved at: ${savedPath}\nOCR:\n"""\n${text || '(no readable text detected)'}\n"""`);
+          const warnings = Array.isArray(ocrResult?.warnings) && ocrResult.warnings.length > 0
+            ? `\nOCR warnings:\n${ocrResult.warnings.map((item) => `- ${item}`).join('\n')}`
+            : '';
+          ocrItems.push(`Image ${index + 1} saved at: ${savedPath}\nOCR engine: ${ocrResult?.engine || 'image-ocr'}\nOCR:\n"""\n${text || '(no readable text detected)'}\n"""${warnings}`);
         } else {
           ocrItems.push(`Image ${index + 1} saved at: ${savedPath}\nOCR skipped by model capability settings.`);
         }

@@ -30,7 +30,12 @@
     "targets": "all",
     "resources": {
       "../ffmpeg/bin/ffmpeg.exe": "ffmpeg/bin/ffmpeg.exe",
-      "../ffmpeg/bin/ffprobe.exe": "ffmpeg/bin/ffprobe.exe"
+      "../ffmpeg/bin/ffprobe.exe": "ffmpeg/bin/ffprobe.exe",
+      "../python/image-ocr/image-ocr": "python/image-ocr/image-ocr",
+      "../python/image-ocr/image-ocr.ps1": "python/image-ocr/image-ocr.ps1",
+      "../python/image-ocr/ocr_image.py": "python/image-ocr/ocr_image.py",
+      "../python/image-ocr/macos_vision_ocr.swift": "python/image-ocr/macos_vision_ocr.swift",
+      "../python/image-ocr/SKILL.md": "python/image-ocr/SKILL.md"
     },
     "icon": [
       "icons/icon.ico"

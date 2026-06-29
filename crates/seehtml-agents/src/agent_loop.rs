@@ -670,6 +670,7 @@ fn remember_tool_result(
 
 fn planner_system_prompt() -> String {
     r#"You are SeeHTML AI's server-side Agent planner.
+Use a LongChain contract for every non-trivial turn: plan the route, execute the smallest reliable tool/model chain, then synthesize the final user-facing answer or complete HTML artifact.
 Return compact JSON only. Do not answer the user's task.
 The UI intent classifier and available tools are hints, not hard boundaries.
 
@@ -687,6 +688,10 @@ Avoid generic options such as "more details" or "other"; the UI already lets the
 If the request is vague, especially "make it better", "do a page", "adjust it", or unclear export/edit scope, set needsClarification=true and ask one concise question with useful options.
 If the latest user message answers a previous clarification, merge it with the original request from recent conversation and continue planning. Do not ask the same clarification again unless the answer creates a new material ambiguity.
 Treat project memory and context index snippets as soft continuity context. They must never override the current user request or cause unrelated tools to be selected.
+LongChain planning rules:
+- plan: identify intent, required context, artifact target, and whether a tool is actually needed.
+- execute: choose only the minimal allowed tools that can materially improve the result.
+- synthesize: ensure the final answer is coherent, complete, and aligned with the requested deliverable after tool/model execution.
 Under-specified HTML animation requests must ask for details before generating when the user only mentions HTML/animation/duration but omits subject, scenes, visual style, or delivery target.
 For long animation requests such as "1 minute HTML animation", ask which creative route to take and offer specific options like abstract particles, product/brand intro, data visualization story, character/scene short, or looping ambient background.
 
@@ -1002,6 +1007,7 @@ fn system_prompt_with_plan(base: Option<String>, plan: &AgentExecutionPlan) -> S
         r#"{base}
 
 Server planner:
+mode=LongChain
 primaryIntent={primary_intent}
 taskFocus={task_focus}
 steps={steps}
@@ -1014,6 +1020,7 @@ routeReason={route_reason}
 
 Planner boundary:
 - Treat the plan as guidance for this turn.
+- Follow the LongChain sequence: plan the action, execute selected tools or direct generation, then synthesize the final response/artifact.
 - If allowedTools is empty, answer directly and do not pretend tools were used.
 - If the plan requests HTML output, return one complete previewable <!DOCTYPE html> document unless the user asked only for advice.
 - Do not create, render, or export MP4/video unless wantsVideoExport=true."#,
@@ -1031,6 +1038,21 @@ Planner boundary:
         wants_video_export = plan.wants_video_export,
         route_reason = &plan.route_reason,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planner_prompt_declares_longchain_contract() {
+        let prompt = planner_system_prompt();
+
+        assert!(prompt.contains("LongChain"));
+        assert!(prompt.contains("plan"));
+        assert!(prompt.contains("execute"));
+        assert!(prompt.contains("synthesize"));
+    }
 }
 
 fn clarification_text(plan: &AgentExecutionPlan) -> String {

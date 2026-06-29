@@ -151,13 +151,13 @@ export function ChatInput() {
   }, [addMessage, t]);
 
   return (
-    <div className='border-t border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-3'>
+    <div className='border-t border-[var(--color-border)] bg-white px-5 py-4'>
       <div>
-        <div className='rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 transition-colors focus-within:border-[var(--color-accent)]'>
+        <div className='rounded-[var(--radius-panel)] border border-[var(--color-border)] bg-white px-3 py-2 shadow-sm transition-colors focus-within:border-[var(--color-accent)]'>
           {hasImages && (
             <div className='mb-2 flex max-h-36 flex-wrap gap-2 overflow-y-auto pr-1'>
               {attachedImages.map((image) => (
-                <div key={image.id} className='group relative h-20 w-24 overflow-hidden rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-secondary)]'>
+                <div key={image.id} className='group relative h-20 w-24 overflow-hidden rounded-[var(--radius-control)] border border-[var(--color-border)] bg-[var(--color-bg-primary)]'>
                   <img src={image.dataUrl} alt={image.name} className='h-full w-full object-cover' />
                   <button
                     type='button'
@@ -195,7 +195,7 @@ export function ChatInput() {
             <button
               type='button'
               onClick={openLocalFile}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]'
               title={t('chat.openFile')}
               aria-label={t('chat.openFile')}
             >
@@ -204,7 +204,7 @@ export function ChatInput() {
             <button
               type='button'
               onClick={openLocalFolder}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]'
               title={t('chat.openFolder')}
               aria-label={t('chat.openFolder')}
             >
@@ -213,7 +213,7 @@ export function ChatInput() {
             <button
               type='button'
               onClick={() => fileRef.current?.click()}
-              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+              className='flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-accent-soft)] hover:text-[var(--color-accent)]'
               title={t('chat.attachImage')}
               aria-label={t('chat.attachImage')}
             >

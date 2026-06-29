@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { AppShell } from './components/layout/AppShell';
-import { ActivityRail } from './components/layout/ActivityRail';
 import { Sidebar } from './components/layout/Sidebar';
 import { EditorPanel } from './components/editor/EditorPanel';
 import { ChatPanel } from './components/chat/ChatPanel';
@@ -11,7 +10,6 @@ import { useChatStore } from './stores/chatStore';
 import { useUIStore } from './stores/uiStore';
 
 export default function App() {
-  const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const commandPaletteOpen = useUIStore((s) => s.commandPaletteOpen);
 
   useEffect(() => {
@@ -38,9 +36,8 @@ export default function App() {
     <div className="h-screen flex flex-col bg-[var(--color-bg-primary)] text-[var(--color-text-primary)]">
       <a href="#workspace-main" className="skip-link">Skip to Workspace</a>
       <AppShell>
-        <ActivityRail />
-        {sidebarOpen && <Sidebar />}
-        <main id="workspace-main" className="flex min-w-0 flex-1 overflow-hidden max-xl:flex-col">
+        <Sidebar />
+        <main id="workspace-main" className="flex min-w-0 flex-1 overflow-hidden max-[900px]:flex-col">
           <EditorPanel />
           <ChatPanel />
         </main>

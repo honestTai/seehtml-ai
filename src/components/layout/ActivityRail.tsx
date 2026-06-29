@@ -1,5 +1,5 @@
 import type React from 'react';
-import { Command, Files, MessageSquare, PanelLeft, Settings, Sparkles } from 'lucide-react';
+import { Command, Files, MessageSquare, MousePointer2, PanelLeft, Settings, Sparkles } from 'lucide-react';
 import { useUIStore } from '../../stores/uiStore';
 import { useI18n } from '../../lib/i18n';
 
@@ -17,13 +17,14 @@ export function ActivityRail() {
   };
 
   return (
-    <nav className='flex h-full w-[52px] flex-shrink-0 flex-col items-center border-r border-[var(--color-border)] bg-[var(--color-rail)] py-2'>
-      <div className='mb-3 flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] bg-[var(--color-accent)] text-[13px] font-bold text-white shadow-sm'>
-        S
+    <nav className='flex h-full w-[56px] flex-shrink-0 flex-col items-center border-r border-black/20 bg-[var(--color-rail)] py-2 text-white shadow-[inset_-1px_0_0_rgba(255,255,255,0.04)]'>
+      <div className='mb-3 flex h-9 w-9 items-center justify-center rounded-[var(--radius-control)] border border-white/10 bg-white text-[13px] font-black tracking-tight text-[#141719] shadow-sm'>
+        SH
       </div>
       <RailButton label={t('sidebar.workspace')} active={sidebarOpen} onClick={toggleSidebar}><PanelLeft size={18} /></RailButton>
       <RailButton label={t('sidebar.fileTree')} active={workspaceMode === 'files'} onClick={showFiles}><Files size={18} /></RailButton>
       <RailButton label={t('chat.title')} onClick={toggleCommandPalette}><MessageSquare size={18} /></RailButton>
+      <RailButton label='Select' onClick={toggleCommandPalette}><MousePointer2 size={18} /></RailButton>
       <RailButton label='AI' onClick={toggleCommandPalette}><Sparkles size={18} /></RailButton>
       <div className='mt-auto flex flex-col gap-1'>
         <RailButton label='Ctrl+K' onClick={toggleCommandPalette}><Command size={17} /></RailButton>
@@ -50,10 +51,10 @@ function RailButton({
       title={label}
       aria-label={label}
       aria-pressed={active ? 'true' : undefined}
-      className={`mb-1 flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] text-sm transition-colors ${
+      className={`mb-1 flex h-9 w-9 items-center justify-center rounded-[var(--radius-control)] text-sm transition-all ${
         active
-          ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] shadow-[inset_0_0_0_1px_var(--color-border)]'
-          : 'text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-tertiary)] hover:text-[var(--color-text-primary)]'
+          ? 'bg-[var(--color-accent)] text-white shadow-[0_2px_8px_rgba(59,130,246,0.3)] scale-[1.05]'
+          : 'text-white/60 hover:bg-white/10 hover:text-white hover:scale-[1.02]'
       }`}
     >
       {children}
