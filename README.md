@@ -19,7 +19,7 @@ Creators and developers building presentations, animations, and visual content.
 
 [中文](#中文) | [English](#english)
 
-[GitHub](https://github.com/honestTai/seehtml-ai) · [Windows Release v2.0.0](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
+[GitHub](https://github.com/honestTai/seehtml-ai) · [Windows 下载 / Latest release](https://github.com/honestTai/seehtml-ai/releases/latest)
 
 ![SeeHTML Motion cover](docs/assets/seehtml-motion-cover.jpg)
 
@@ -37,7 +37,7 @@ SeeHTML AI 是一个本地桌面端 HTML 创作与导出工作台。它把“用
 
 ### Windows 下载
 
-最新版本：[`SeeHTML AI v2.0.0`](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
+本页安装包对应版本（2026-09-13 核验）：[`SeeHTML AI v2.0.0`](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
 
 - 推荐安装包：[`SeeHTML.AI_2.0.0_x64-setup.exe`](https://github.com/honestTai/seehtml-ai/releases/download/v2.0.0/SeeHTML.AI_2.0.0_x64-setup.exe)
 - MSI 安装包：[`SeeHTML.AI_2.0.0_x64_en-US.msi`](https://github.com/honestTai/seehtml-ai/releases/download/v2.0.0/SeeHTML.AI_2.0.0_x64_en-US.msi)
@@ -269,7 +269,7 @@ It is not a template editor. It is closer to a local coding agent for visual HTM
 
 ### Windows Download
 
-Latest version: [`SeeHTML AI v2.0.0`](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
+Installer version verified on September 13, 2026: [`SeeHTML AI v2.0.0`](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
 
 - Recommended installer: [`SeeHTML.AI_2.0.0_x64-setup.exe`](https://github.com/honestTai/seehtml-ai/releases/download/v2.0.0/SeeHTML.AI_2.0.0_x64-setup.exe)
 - MSI installer: [`SeeHTML.AI_2.0.0_x64_en-US.msi`](https://github.com/honestTai/seehtml-ai/releases/download/v2.0.0/SeeHTML.AI_2.0.0_x64_en-US.msi)
@@ -492,15 +492,9 @@ The following files and folders are not committed:
 
 MIT License.
 
-## 作者与 HRouter · About the author
+## 作者与服务 · Author & services
 
-我是 **honestTai**，开发工具，也运营 [HRouter](https://hrouter.net/home)。这里持续分享实用代码、AI 应用、Skills 与插件，把工作中的需求变成可复用的项目。  
-I’m **honestTai**, the developer and operator behind HRouter. I share practical code, AI apps, skills, and plugins built around real workflows.
+由 [honestTai](https://github.com/honestTai) 维护。模型供应商可在应用内配置；也欢迎了解我运营的 [HRouter](https://hrouter.net/home) 模型接入服务。  
+Maintained by honestTai. Configure your model provider in the app, or explore my HRouter model-access service.
 
-需要为 AI 编程或应用开发选择模型服务？HRouter 是我运营的模型路由服务。项目的供应商选择与接入方式见下方配置说明。  
-Building with AI? HRouter is my model-routing service for AI coding and applications. Follow this project’s configuration guide when choosing a model provider.
-
-[了解 HRouter · Explore HRouter](https://hrouter.net/home) · [发现更多项目 · More projects](https://github.com/honestTai)
-
-**觉得有用，欢迎 Star；有想法，欢迎到 Issues 交流。**  
-**Star the project if it helps, and share your ideas in Issues.**
+[使用反馈 / Issues](https://github.com/honestTai/seehtml-ai/issues) · [更多项目 / More projects](https://github.com/honestTai)
