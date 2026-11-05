@@ -13,6 +13,12 @@
 
 </div>
 
+## ❤️ Sponsor
+
+| Sponsor | What it is |
+| :--- | :--- |
+| [![HRouter](docs/assets/hrouter-sponsor.svg)](https://hrouter.net/home) | **[HRouter](https://hrouter.net/home)**: model access, API key management, and usage tracking for AI coding and application development. Also operated by the maintainer. |
+
 ## Quick start
 
 Installer version verified on September 13, 2026: [`SeeHTML AI v2.0.0`](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
