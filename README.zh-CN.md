@@ -13,6 +13,12 @@
 
 </div>
 
+## ❤️ 赞助商
+
+| 赞助商 | 简介 |
+| :--- | :--- |
+| [![HRouter](docs/assets/hrouter-sponsor.svg)](https://hrouter.net/home) | **[HRouter](https://hrouter.net/home)**：面向 AI 编程与应用开发的模型接入、API Key 管理与用量统计，也由作者运营。 |
+
 ## 快速开始
 
 本页安装包对应版本（2026-09-13 核验）：[`SeeHTML AI v2.0.0`](https://github.com/honestTai/seehtml-ai/releases/tag/v2.0.0)
