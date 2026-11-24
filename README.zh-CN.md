@@ -7,7 +7,7 @@
 
 **SeeHTML AI 是一个本地桌面端 HTML 创作与导出工作台。**
 
-[HRouter](https://hrouter.net/home) · [演示视频](docs/assets/seehtml-motion-promo.mp4) · [使用反馈](https://github.com/honestTai/seehtml-ai/issues)
+[HRouter](https://hrouter.net/) · [演示视频](docs/assets/seehtml-motion-promo.mp4) · [使用反馈](https://github.com/honestTai/seehtml-ai/issues)
 
 [English](README.md) · **简体中文**
 
@@ -17,7 +17,7 @@
 
 | 赞助商 | 简介 |
 | :--- | :--- |
-| [![HRouter](docs/assets/hrouter-sponsor.svg)](https://hrouter.net/home) | **[HRouter](https://hrouter.net/home)**：面向 AI 编程与应用开发的模型接入、API Key 管理与用量统计，也由作者运营。 |
+| [![HRouter](docs/assets/hrouter-sponsor.svg)](https://hrouter.net/) | **[HRouter](https://hrouter.net/)**：面向开发者的 AI 编程模型按量计费网关 —— 一把 API Key 直连 **Claude、OpenAI Codex / GPT、Google Gemini、DeepSeek**，零月费订阅，提供 [模型价格与 24h 实时状态](https://hrouter.net/models/)，一键接入 [Claude Code](https://hrouter.net/docs/claude-code/)、[Codex CLI](https://hrouter.net/docs/codex/)、[Gemini CLI](https://hrouter.net/docs/gemini-cli/) 与 [DeepSeek](https://hrouter.net/docs/deepseek/)。 |
 
 ## 快速开始
 
@@ -67,7 +67,7 @@ target/release/bundle/msi/
 
 [MIT License](LICENSE)。
 
-由 [honestTai](https://github.com/honestTai) 维护。模型供应商可在应用内配置；也欢迎了解我运营的 [HRouter](https://hrouter.net/home) 模型接入服务。
+由 [honestTai](https://github.com/honestTai) 维护。模型供应商可在应用内配置；也欢迎了解我运营的 [HRouter](https://hrouter.net/) 模型接入服务。
 
 ## 星标历史
 
@@ -82,6 +82,6 @@ target/release/bundle/msi/
 
 <div align="center">
 
-Made by **[honestTai](https://github.com/honestTai)** · [HRouter](https://hrouter.net/home) · [More projects](https://github.com/honestTai)
+Made by **[honestTai](https://github.com/honestTai)** · [HRouter](https://hrouter.net/) · [More projects](https://github.com/honestTai)
 
 </div>
