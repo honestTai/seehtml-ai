@@ -7,7 +7,7 @@
 
 **SeeHTML AI is a local desktop workspace for HTML creation, preview, and export.**
 
-[HRouter](https://hrouter.net/home) · [Demo](docs/assets/seehtml-motion-promo.mp4) · [Issues](https://github.com/honestTai/seehtml-ai/issues)
+[HRouter](https://hrouter.net/) · [Demo](docs/assets/seehtml-motion-promo.mp4) · [Issues](https://github.com/honestTai/seehtml-ai/issues)
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -17,7 +17,7 @@
 
 | Sponsor | What it is |
 | :--- | :--- |
-| [![HRouter](docs/assets/hrouter-sponsor.svg)](https://hrouter.net/home) | **[HRouter](https://hrouter.net/home)**: model access, API key management, and usage tracking for AI coding and application development. Also operated by the maintainer. |
+| [![HRouter](docs/assets/hrouter-sponsor.svg)](https://hrouter.net/) | **[HRouter](https://hrouter.net/)**: pay-as-you-go AI coding API gateway — one API key for **Claude, OpenAI Codex / GPT, Google Gemini & DeepSeek** with live [Models & 24h Status](https://hrouter.net/models/), native setup for [Claude Code](https://hrouter.net/docs/claude-code/), [Codex CLI](https://hrouter.net/docs/codex/), [Gemini CLI](https://hrouter.net/docs/gemini-cli/) & [DeepSeek](https://hrouter.net/docs/deepseek/). Also operated by the maintainer. |
 
 ## Quick start
 
@@ -82,6 +82,6 @@ Maintained by honestTai. Configure your model provider in the app, or explore my
 
 <div align="center">
 
-Made by **[honestTai](https://github.com/honestTai)** · [HRouter](https://hrouter.net/home) · [More projects](https://github.com/honestTai)
+Made by **[honestTai](https://github.com/honestTai)** · [HRouter](https://hrouter.net/) · [More projects](https://github.com/honestTai)
 
 </div>
